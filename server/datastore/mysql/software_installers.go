@@ -2045,17 +2045,17 @@ func (ds *Datastore) CleanupUnusedSoftwareInstallers(ctx context.Context, softwa
 const maxCachedFMAVersions = 2
 
 func (ds *Datastore) BatchSetSoftwareInstallers(ctx context.Context, tmID *uint, installers []*fleet.UploadSoftwareInstallerPayload) error {
-	const upsertSoftwareTitles = `
+	upsertSoftwareTitles := `
 INSERT INTO software_titles
   (name, source, extension_for, bundle_identifier, upgrade_code)
 VALUES
   %s
-ON DUPLICATE KEY UPDATE
+` + ds.dialect.OnDuplicateKey("", `
   name = VALUES(name),
   source = VALUES(source),
   extension_for = VALUES(extension_for),
   bundle_identifier = VALUES(bundle_identifier)
-`
+`)
 
 	const loadSoftwareTitles = `
 SELECT
@@ -2262,7 +2262,7 @@ WHERE
 	title_id = ?
 `
 
-	const insertNewOrEditedInstaller = `
+	insertNewOrEditedInstaller := `
 INSERT INTO software_installers (
 	team_id,
 	global_or_team_id,
@@ -2290,7 +2290,7 @@ INSERT INTO software_installers (
   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
   (SELECT name FROM users WHERE id = ?), (SELECT email FROM users WHERE id = ?), ?, ?, COALESCE(?, false), ?, ?
 )
-ON DUPLICATE KEY UPDATE
+` + ds.dialect.OnDuplicateKey("", `
   install_script_content_id = VALUES(install_script_content_id),
   uninstall_script_content_id = VALUES(uninstall_script_content_id),
   post_install_script_content_id = VALUES(post_install_script_content_id),
@@ -2308,7 +2308,7 @@ ON DUPLICATE KEY UPDATE
   url = VALUES(url),
   install_during_setup = COALESCE(?, install_during_setup),
   is_active = VALUES(is_active)
-`
+`)
 
 	const updateInstaller = `
 UPDATE
@@ -2350,7 +2350,7 @@ WHERE
 	software_installer_id = ?
 `
 
-	const upsertInstallerLabels = `
+	upsertInstallerLabels := `
 INSERT INTO
 	software_installer_labels (
 		software_installer_id,
@@ -2359,9 +2359,9 @@ INSERT INTO
 	)
 VALUES
 	%s
-ON DUPLICATE KEY UPDATE
+` + ds.dialect.OnDuplicateKey("", `
 	exclude = VALUES(exclude)
-`
+`)
 
 	const loadExistingInstallerLabels = `
 SELECT
