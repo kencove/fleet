@@ -20,7 +20,7 @@ import (
 )
 
 func TestAndroid(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 	TruncateTables(t, ds)
 
 	cases := []struct {
@@ -2249,7 +2249,7 @@ func testSetAndroidHostUnenrolled(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 
 	// Sanity check initial host_mdm values
-	var enrolled int
+	var enrolled bool
 	var serverURL string
 	var mdmIDIsNull int
 	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
@@ -2261,7 +2261,7 @@ func testSetAndroidHostUnenrolled(t *testing.T, ds *Datastore) {
 	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
 		return sqlx.GetContext(testCtx(), q, &mdmIDIsNull, `SELECT CASE WHEN mdm_id IS NULL THEN 1 ELSE 0 END FROM host_mdm WHERE host_id = ?`, res.Host.ID)
 	})
-	require.Equal(t, 1, enrolled)
+	require.True(t, enrolled)
 	require.NotEmpty(t, serverURL)
 	require.Equal(t, 0, mdmIDIsNull)
 
@@ -2294,7 +2294,7 @@ func testSetAndroidHostUnenrolled(t *testing.T, ds *Datastore) {
 	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
 		return sqlx.GetContext(testCtx(), q, &profileCountForHost, `SELECT COUNT(*) FROM host_mdm_android_profiles WHERE host_uuid=?`, res.Host.UUID)
 	})
-	assert.Equal(t, 0, enrolled)
+	assert.False(t, enrolled)
 	assert.Equal(t, "", serverURL)
 	assert.Equal(t, 1, mdmIDIsNull)
 	assert.Equal(t, 0, profileCountForHost)

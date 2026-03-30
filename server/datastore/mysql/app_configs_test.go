@@ -18,7 +18,7 @@ import (
 )
 
 func TestAppConfig(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 
 	cases := []struct {
 		name string
@@ -404,7 +404,7 @@ func testAggregateEnrollSecretPerTeam(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 
 	// a team with no enroll secrets
-	_, err = ds.NewTeam(context.Background(), &fleet.Team{Name: "team2"})
+	team2, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "team2"})
 	require.NoError(t, err)
 
 	// a team with a single enroll secret
@@ -432,9 +432,9 @@ func testAggregateEnrollSecretPerTeam(t *testing.T, ds *Datastore) {
 
 	require.ElementsMatch(t, []*fleet.EnrollSecret{
 		{TeamID: nil, Secret: "global_secret"},
-		{TeamID: ptr.Uint(1), Secret: "team_1_secret_1"},
-		{TeamID: ptr.Uint(2), Secret: ""},
-		{TeamID: ptr.Uint(3), Secret: "team_3_secret_1"},
+		{TeamID: &team1.ID, Secret: "team_1_secret_1"},
+		{TeamID: &team2.ID, Secret: ""},
+		{TeamID: &team3.ID, Secret: "team_3_secret_1"},
 	}, agg)
 }
 

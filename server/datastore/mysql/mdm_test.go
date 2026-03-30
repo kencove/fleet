@@ -28,7 +28,7 @@ import (
 )
 
 func TestMDMShared(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 	TruncateTables(t, ds)
 
 	cases := []struct {
@@ -55,7 +55,6 @@ func TestMDMShared(t *testing.T) {
 		{"TestBatchResendProfileToHosts", testBatchResendProfileToHosts},
 		{"TestGetMDMConfigProfileStatus", testGetMDMConfigProfileStatus},
 		{"TestDeleteMDMProfilesCancelsInstalls", testDeleteMDMProfilesCancelsInstalls},
-		{"TestDeleteTeamCancelsWindowsProfileInstalls", testDeleteTeamCancelsWindowsProfileInstalls},
 		{"TestCleanUpMDMManagedCertificates", testCleanUpMDMManagedCertificates},
 	}
 
@@ -1335,66 +1334,8 @@ type anyProfile struct {
 	IdentifierOrName string
 }
 
-// cleanupStaleWindowsRemoveRows simulates the full Windows profile removal
-// lifecycle (reconciler sends <Delete> → device confirms → row deleted) for
-// remove rows that are NOT expected in the test assertions. Without this,
-// remove rows from previous test phases accumulate and cause count mismatches.
-//
-// Scoped to only the Windows hosts present in the want map so that rows
-// belonging to hosts not in the current assertion are left untouched. This
-// prevents implicitly hiding issues for hosts the test phase doesn't check.
-func cleanupStaleWindowsRemoveRows(t *testing.T, ds *Datastore, want map[*fleet.Host][]anyProfile) {
-	// Collect the set of Windows host UUIDs in the assertion and the
-	// (profile_uuid, host_uuid) pairs that are expected as remove rows.
-	wantWindowsHostUUIDs := make([]string, 0)
-	wantRemoveKeys := make(map[string]bool)
-	for h, profs := range want {
-		if h.Platform != "windows" {
-			continue
-		}
-		wantWindowsHostUUIDs = append(wantWindowsHostUUIDs, h.UUID)
-		for _, p := range profs {
-			if p.OperationType == fleet.MDMOperationTypeRemove {
-				wantRemoveKeys[p.ProfileUUID+"\n"+h.UUID] = true
-			}
-		}
-	}
-	if len(wantWindowsHostUUIDs) == 0 {
-		return
-	}
-	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
-		// Only select remove rows for hosts in the current assertion's want map.
-		stmt, args, err := sqlx.In(
-			`SELECT profile_uuid, host_uuid FROM host_mdm_windows_profiles WHERE operation_type = 'remove' AND host_uuid IN (?)`,
-			wantWindowsHostUUIDs)
-		if err != nil {
-			return err
-		}
-		var rows []struct {
-			ProfileUUID string `db:"profile_uuid"`
-			HostUUID    string `db:"host_uuid"`
-		}
-		if err := sqlx.SelectContext(context.Background(), q, &rows, stmt, args...); err != nil {
-			return err
-		}
-		for _, r := range rows {
-			key := r.ProfileUUID + "\n" + r.HostUUID
-			if !wantRemoveKeys[key] {
-				if _, err := q.ExecContext(context.Background(),
-					`DELETE FROM host_mdm_windows_profiles WHERE profile_uuid = ? AND host_uuid = ? AND operation_type = 'remove'`,
-					r.ProfileUUID, r.HostUUID); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-}
-
-// assertHostProfiles only asserts the profile UUID, status, and operation.
+// only asserts the profile ID, status and operation
 func assertHostProfiles(t *testing.T, ds *Datastore, want map[*fleet.Host][]anyProfile) {
-	cleanupStaleWindowsRemoveRows(t, ds, want)
-
 	ctx := context.Background()
 	for h, wantProfs := range want {
 		var gotProfs []anyProfile
@@ -1943,23 +1884,8 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 		},
 		unenrolledHost: {},
 		linuxHost:      {},
-		windowsHosts[0]: {
-			{
-				ProfileUUID:   globalProfiles[5].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[6].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[7].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-		},
+		// windows profiles are directly deleted without a pending state (there's no on-host removal of profiles)
+		windowsHosts[0]: {},
 		windowsHosts[1]: {
 			{
 				ProfileUUID:   globalProfiles[5].ProfileUUID,
@@ -2016,10 +1942,10 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 	toRemoveDarwin, err = ds.ListMDMAppleProfilesToRemove(ctx)
 	require.NoError(t, err)
 	require.Len(t, toRemoveDarwin, 6)
-	// 6 are now "to remove" for windows (3 for windowsHosts[0] marked remove+NULL, 3 for windowsHosts[1] install+NULL)
+	// 3 are now "to remove" for windows
 	toRemoveWindows, err = ds.ListMDMWindowsProfilesToRemove(ctx)
 	require.NoError(t, err)
-	require.Len(t, toRemoveWindows, 6)
+	require.Len(t, toRemoveWindows, 3)
 
 	// update status of the moved host via its uuid (team has no profiles)
 	updates, err = ds.BulkSetPendingMDMHostProfiles(
@@ -2130,43 +2056,11 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 				IdentifierOrName: globalProfiles[4].Identifier,
 			},
 		},
-		unenrolledHost: {},
-		linuxHost:      {},
-		windowsHosts[0]: {
-			{
-				ProfileUUID:   globalProfiles[5].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[6].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[7].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-		},
-		// windows profiles are now marked for removal instead of being directly deleted
-		windowsHosts[1]: {
-			{
-				ProfileUUID:   globalProfiles[5].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[6].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[7].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-		},
+		unenrolledHost:  {},
+		linuxHost:       {},
+		windowsHosts[0]: {},
+		// windows profiles are directly deleted without a pending state
+		windowsHosts[1]: {},
 		windowsHosts[2]: {
 			{
 				ProfileUUID:   globalProfiles[5].ProfileUUID,
@@ -2216,10 +2110,10 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 	toRemoveDarwin, err = ds.ListMDMAppleProfilesToRemove(ctx)
 	require.NoError(t, err)
 	require.Len(t, toRemoveDarwin, 6)
-	// 6 profiles still to remove in windows (3 remove+NULL on windowsHosts[0], 3 remove+NULL on windowsHosts[1])
+	// no profiles to remove in windows
 	toRemoveWindows, err = ds.ListMDMWindowsProfilesToRemove(ctx)
 	require.NoError(t, err)
-	require.Len(t, toRemoveWindows, 6)
+	require.Len(t, toRemoveWindows, 0)
 
 	// update status of the affected team
 	updates, err = ds.BulkSetPendingMDMHostProfiles(ctx, nil, []uint{team1.ID}, nil, nil)
@@ -2340,21 +2234,6 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 		linuxHost:      {},
 		windowsHosts[0]: {
 			{
-				ProfileUUID:   globalProfiles[5].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[6].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[7].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
 				ProfileUUID:   tm1Profiles[2].ProfileUUID,
 				Status:        &fleet.MDMDeliveryPending,
 				OperationType: fleet.MDMOperationTypeInstall,
@@ -2365,23 +2244,7 @@ func testBulkSetPendingMDMHostProfiles(t *testing.T, ds *Datastore) {
 				OperationType: fleet.MDMOperationTypeInstall,
 			},
 		},
-		windowsHosts[1]: {
-			{
-				ProfileUUID:   globalProfiles[5].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[6].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-			{
-				ProfileUUID:   globalProfiles[7].ProfileUUID,
-				Status:        &fleet.MDMDeliveryPending,
-				OperationType: fleet.MDMOperationTypeRemove,
-			},
-		},
+		windowsHosts[1]: {},
 		windowsHosts[2]: {
 			{
 				ProfileUUID:   globalProfiles[5].ProfileUUID,
@@ -6943,14 +6806,14 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 	wantOtherWin := []fleet.ConfigurationProfileLabel{
 		{ProfileUUID: otherWinProfile.ProfileUUID, LabelName: label.Name, LabelID: label.ID},
 	}
-	updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, ds.writer(ctx), wantOtherWin, []string{windowsProfile.ProfileUUID}, "windows")
+	updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, ds.writer(ctx), ds.dialect, wantOtherWin, []string{windowsProfile.ProfileUUID}, "windows")
 	require.NoError(t, err)
 	assert.True(t, updatedDB)
 	// make it an "exclude" label on the other macos profile
 	wantOtherMac := []fleet.ConfigurationProfileLabel{
 		{ProfileUUID: otherMacProfile.ProfileUUID, LabelName: label.Name, LabelID: label.ID, Exclude: true},
 	}
-	updatedDB, err = batchSetProfileLabelAssociationsDB(ctx, ds.writer(ctx), wantOtherMac, []string{macOSProfile.ProfileUUID}, "darwin")
+	updatedDB, err = batchSetProfileLabelAssociationsDB(ctx, ds.writer(ctx), ds.dialect, wantOtherMac, []string{macOSProfile.ProfileUUID}, "darwin")
 	require.NoError(t, err)
 	assert.True(t, updatedDB)
 
@@ -6985,7 +6848,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 		t.Run("empty input "+platform, func(t *testing.T) {
 			want := []fleet.ConfigurationProfileLabel{}
 			err := ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, want, nil, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, want, nil, platform)
 				require.NoError(t, err)
 				assert.False(t, updatedDB)
 				return err
@@ -7002,7 +6865,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: label.Name, LabelID: label.ID},
 			}
 			err := ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, profileLabels, nil, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, profileLabels, nil, platform)
 				require.NoError(t, err)
 				assert.True(t, updatedDB)
 				return err
@@ -7018,7 +6881,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: label.Name, LabelID: label.ID, Exclude: true},
 			}
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, profileLabels, nil, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, profileLabels, nil, platform)
 				require.NoError(t, err)
 				assert.True(t, updatedDB)
 				return err
@@ -7036,7 +6899,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 			}
 
 			err := ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, invalidProfileLabels, nil, platform)
+				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, invalidProfileLabels, nil, platform)
 				return err
 			})
 			require.Error(t, err)
@@ -7048,7 +6911,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: label.Name, LabelID: 12345},
 			}
 			err := ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, invalidProfileLabels, nil, platform)
+				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, invalidProfileLabels, nil, platform)
 				return err
 			})
 			require.Error(t, err)
@@ -7058,7 +6921,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: "xyz", LabelID: 1235},
 			}
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, invalidProfileLabels, nil, platform)
+				_, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, invalidProfileLabels, nil, platform)
 				return err
 			})
 			require.Error(t, err)
@@ -7080,7 +6943,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: newLabel.Name, LabelID: newLabel.ID, Exclude: true},
 			}
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, profileLabels, nil, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, profileLabels, nil, platform)
 				require.NoError(t, err)
 				assert.True(t, updatedDB)
 				return err
@@ -7094,7 +6957,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 				{ProfileUUID: uuid, LabelName: label.Name, LabelID: label.ID},
 			}
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, profileLabels, nil, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, profileLabels, nil, platform)
 				require.NoError(t, err)
 				assert.True(t, updatedDB)
 				return err
@@ -7104,7 +6967,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 
 			// batch apply again this time without any label
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, nil, []string{uuid}, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, nil, []string{uuid}, platform)
 				require.NoError(t, err)
 				assert.True(t, updatedDB)
 				return err
@@ -7118,7 +6981,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 
 			// batch apply again with no change returns false
 			err = ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, nil, []string{uuid}, platform)
+				updatedDB, err := batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, nil, []string{uuid}, platform)
 				require.NoError(t, err)
 				assert.False(t, updatedDB)
 				return err
@@ -7133,6 +6996,7 @@ func testBatchSetProfileLabelAssociations(t *testing.T, ds *Datastore) {
 			_, err := batchSetProfileLabelAssociationsDB(
 				ctx,
 				tx,
+				ds.dialect,
 				[]fleet.ConfigurationProfileLabel{{}},
 				nil,
 				"unsupported",
@@ -8344,14 +8208,8 @@ func testBulkSetPendingMDMHostProfilesExcludeAny(t *testing.T, ds *Datastore) {
 				IdentifierOrName: allProfs[2].Identifier,
 			},
 		},
-		winHost: {
-			{
-				ProfileUUID:      allProfs[3].ProfileUUID,
-				Status:           &fleet.MDMDeliveryPending,
-				OperationType:    fleet.MDMOperationTypeRemove,
-				IdentifierOrName: allProfs[3].Name,
-			},
-		},
+		// windows profiles are directly deleted without a pending state (there's no on-host removal of profiles)
+		winHost: {},
 		androidHost: {
 			{
 				ProfileUUID:      allProfs[0].ProfileUUID,
@@ -9112,10 +8970,8 @@ func testDeleteMDMProfilesCancelsInstalls(t *testing.T, ds *Datastore) {
 	err = ds.DeleteMDMWindowsConfigProfile(ctx, profNameToProf["W2"].ProfileUUID)
 	require.NoError(t, err)
 
-	assertHostProfileOpStatus(t, ds, host3.UUID,
-		hostProfileOpStatus{profNameToProf["W2"].ProfileUUID, fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove})
-	assertHostProfileOpStatus(t, ds, host4.UUID,
-		hostProfileOpStatus{profNameToProf["W2"].ProfileUUID, fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove})
+	assertHostProfileOpStatus(t, ds, host3.UUID)
+	assertHostProfileOpStatus(t, ds, host4.UUID)
 
 	// set the android profile as pending install on host 5 and installed on host 6
 	forceSetAndroidHostProfileStatus(t, ds, host5.UUID, test.ToMDMAndroidConfigProfile(profNameToProf["G2"]), fleet.MDMOperationTypeInstall, fleet.MDMDeliveryPending)
@@ -9207,94 +9063,6 @@ func testDeleteMDMProfilesCancelsInstalls(t *testing.T, ds *Datastore) {
 	}, &fleet.MDMCommandListOptions{Filters: fleet.MDMCommandFilters{HostIdentifier: host1.UUID}})
 	require.NoError(t, err)
 	require.Len(t, cmds, 0)
-}
-
-// testDeleteTeamCancelsWindowsProfileInstalls verifies that when a team is
-// deleted, <Delete> commands are generated for Windows profiles that were
-// delivered to hosts. This ensures settings are actually removed from devices
-// rather than silently orphaned.
-func testDeleteTeamCancelsWindowsProfileInstalls(t *testing.T, ds *Datastore) {
-	ctx := t.Context()
-
-	// Create a team with Windows profiles.
-	team, err := ds.NewTeam(ctx, &fleet.Team{Name: "delete-team-test"})
-	require.NoError(t, err)
-
-	windowsProfs := []*fleet.MDMWindowsConfigProfile{
-		windowsConfigProfileForTest(t, "TW1", "TW1"),
-		windowsConfigProfileForTest(t, "TW2", "TW2"),
-	}
-	_, err = ds.BatchSetMDMProfiles(ctx, &team.ID, nil, windowsProfs, nil, nil, nil)
-	require.NoError(t, err)
-
-	// Collect profile UUIDs.
-	profs, _, err := ds.ListMDMConfigProfiles(ctx, &team.ID, fleet.ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, profs, 2)
-	profUUIDs := make([]string, len(profs))
-	for i, p := range profs {
-		profUUIDs[i] = p.ProfileUUID
-	}
-
-	// Create Windows hosts enrolled in MDM and assigned to the team.
-	host1 := test.NewHost(t, ds, "tw-host1", "tw1", "tw1key", "tw-host1-uuid", time.Now())
-	host1.Platform = "windows"
-	host1.TeamID = &team.ID
-	err = ds.UpdateHost(ctx, host1)
-	require.NoError(t, err)
-	windowsEnroll(t, ds, host1)
-
-	host2 := test.NewHost(t, ds, "tw-host2", "tw2", "tw2key", "tw-host2-uuid", time.Now())
-	host2.Platform = "windows"
-	host2.TeamID = &team.ID
-	err = ds.UpdateHost(ctx, host2)
-	require.NoError(t, err)
-	windowsEnroll(t, ds, host2)
-
-	// Simulate profiles delivered to both hosts (install + verified).
-	for _, h := range []*fleet.Host{host1, host2} {
-		for _, p := range profs {
-			forceSetWindowsHostProfileStatus(t, ds, h.UUID,
-				test.ToMDMWindowsConfigProfile(p),
-				fleet.MDMOperationTypeInstall, fleet.MDMDeliveryVerified)
-		}
-	}
-
-	// Verify: 4 rows, all install+verified.
-	assertHostProfileOpStatus(t, ds, host1.UUID,
-		hostProfileOpStatus{profUUIDs[0], fleet.MDMDeliveryVerified, fleet.MDMOperationTypeInstall},
-		hostProfileOpStatus{profUUIDs[1], fleet.MDMDeliveryVerified, fleet.MDMOperationTypeInstall})
-	assertHostProfileOpStatus(t, ds, host2.UUID,
-		hostProfileOpStatus{profUUIDs[0], fleet.MDMDeliveryVerified, fleet.MDMOperationTypeInstall},
-		hostProfileOpStatus{profUUIDs[1], fleet.MDMDeliveryVerified, fleet.MDMOperationTypeInstall})
-
-	// Delete the team — this should generate <Delete> commands.
-	err = ds.DeleteTeam(ctx, team.ID)
-	require.NoError(t, err)
-
-	// Config profiles should be gone.
-	teamProfs, _, err := ds.ListMDMConfigProfiles(ctx, &team.ID, fleet.ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, teamProfs, 0)
-
-	// Host-profile rows should be remove+pending (not remove+NULL, not deleted).
-	assertHostProfileOpStatus(t, ds, host1.UUID,
-		hostProfileOpStatus{profUUIDs[0], fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove},
-		hostProfileOpStatus{profUUIDs[1], fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove})
-	assertHostProfileOpStatus(t, ds, host2.UUID,
-		hostProfileOpStatus{profUUIDs[0], fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove},
-		hostProfileOpStatus{profUUIDs[1], fleet.MDMDeliveryPending, fleet.MDMOperationTypeRemove})
-
-	// Verify <Delete> commands were enqueued.
-	var deleteCmdCount int
-	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
-		return sqlx.GetContext(ctx, q, &deleteCmdCount, `
-			SELECT COUNT(*) FROM windows_mdm_command_queue wmcq
-			JOIN windows_mdm_commands wmc ON wmc.command_uuid = wmcq.command_uuid
-			WHERE wmc.raw_command LIKE '%<Delete>%'`)
-	})
-	// 2 profiles × 2 hosts = 4 queue entries (but command rows are shared per profile)
-	require.Equal(t, 4, deleteCmdCount, "expected 4 delete command queue entries (2 profiles × 2 hosts)")
 }
 
 func androidConfigProfileForTest(t *testing.T, name string, content map[string]any, labels ...*fleet.Label) *fleet.MDMAndroidConfigProfile {

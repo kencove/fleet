@@ -15,7 +15,7 @@ import (
 )
 
 func TestCalendarEvents(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 
 	cases := []struct {
 		name string
@@ -81,7 +81,7 @@ func testUpdateCalendarEvent(t *testing.T, ds *Datastore) {
 
 	eventDetails, err := ds.GetCalendarEventDetailsByUUID(ctx, eventUUIDNew)
 	require.NoError(t, err)
-	assert.Equal(t, strings.ToUpper(eventUUIDNew), eventDetails.UUID)
+	assert.True(t, strings.EqualFold(eventUUIDNew, eventDetails.UUID), "expected UUID %q to match %q (case-insensitive)", eventUUIDNew, eventDetails.UUID)
 	assert.Equal(t, *calendarEvent, eventDetails.CalendarEvent)
 	assert.Equal(t, host.ID, *eventDetails.HostID)
 	assert.Nil(t, eventDetails.TeamID)

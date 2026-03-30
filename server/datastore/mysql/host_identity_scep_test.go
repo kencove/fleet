@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fleetdm/fleet/v4/ee/pkg/hostidentity/types"
+	"github.com/fleetdm/fleet/v4/ee/server/service/hostidentity/types"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/stretchr/testify/assert"
@@ -19,7 +19,7 @@ import (
 )
 
 func TestHostIdentitySCEP(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 
 	cases := []struct {
 		name string
@@ -174,7 +174,7 @@ func testGetHostIdentityCert(t *testing.T, ds *Datastore) {
 			} else {
 				assert.Nil(t, cert.HostID)
 			}
-			assert.WithinDuration(t, tc.notAfter, cert.NotValidAfter, 5*time.Second)
+			assert.WithinDuration(t, tc.notAfter.UTC(), cert.NotValidAfter.UTC(), 5*time.Second)
 			assert.NotEmpty(t, cert.PublicKeyRaw)
 
 			// Test that we can unmarshal the public key

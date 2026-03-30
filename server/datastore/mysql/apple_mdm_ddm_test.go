@@ -14,7 +14,7 @@ import (
 )
 
 func TestMDMDDMApple(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 
 	cases := []struct {
 		name string
@@ -42,7 +42,7 @@ func setupMDMDeviceAndEnrollment(t *testing.T, ds *Datastore, ctx context.Contex
 	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
 		_, err := q.ExecContext(ctx,
 			`INSERT INTO nano_enrollments (id, device_id, type, topic, push_magic, token_hex, enabled, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			hostUUID, hostUUID, "Device", "topic", "push_magic", "token_hex", 1, time.Now())
+			hostUUID, hostUUID, "Device", "topic", "push_magic", "token_hex", true, time.Now())
 		return err
 	})
 }

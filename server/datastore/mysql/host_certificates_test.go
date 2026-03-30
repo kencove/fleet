@@ -21,7 +21,7 @@ import (
 )
 
 func TestHostCertificates(t *testing.T) {
-	ds := CreateMySQLDS(t)
+	ds := CreateDS(t)
 
 	cases := []struct {
 		name string
@@ -744,7 +744,9 @@ func testTruncateLongCertificateFields(t *testing.T, ds *Datastore) {
 	cert.Username = longUsername260
 	cert.Source = fleet.UserHostCertificate
 
-	// Create a host for testing
+	// Create a host for testing (must happen before UpdateHostCertificates so we
+	// can set the correct HostID on the cert record — PG identities are not reset
+	// between subtests).
 	host, err := ds.NewHost(ctx, &fleet.Host{
 		DetailUpdatedAt: time.Now(),
 		LabelUpdatedAt:  time.Now(),
@@ -756,6 +758,10 @@ func testTruncateLongCertificateFields(t *testing.T, ds *Datastore) {
 		Hostname:        "test-truncate-host",
 	})
 	require.NoError(t, err)
+
+	// Fix up the cert's HostID to match the actual host (PG identities aren't
+	// reset between subtests so host.ID may differ from the literal 1 used above).
+	cert.HostID = host.ID
 
 	// Update certificates - this should trigger truncation
 	err = ds.UpdateHostCertificates(ctx, host.ID, host.UUID, []*fleet.HostCertificateRecord{cert})
