@@ -26,11 +26,12 @@ VALUES (?, ?, ?, ?, ?, COALESCE(?, NOW()))
 	if !job.NotBefore.IsZero() {
 		notBefore = &job.NotBefore
 	}
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), query, job.Name, job.Args, job.State, job.Retries, job.Error, notBefore)
+	result, err := ds.writer(ctx).ExecContext(ctx, query, job.Name, job.Args, job.State, job.Retries, job.Error, notBefore)
 	if err != nil {
 		return nil, err
 	}
 
+	id, _ := result.LastInsertId()
 	job.ID = uint(id) //nolint:gosec // dismiss G115
 
 	return job, nil

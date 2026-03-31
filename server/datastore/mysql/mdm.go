@@ -1156,8 +1156,8 @@ WHERE
 GROUP BY
 	profile_uuid, name, syncml
 HAVING
-	COUNT(*) > 0 AND
-	COUNT(lm.label_id) = COUNT(*)
+	count_profile_labels > 0 AND
+	count_host_labels = count_profile_labels
 
 UNION
 
@@ -1183,9 +1183,9 @@ GROUP BY
 	profile_uuid, name, syncml
 HAVING
 	-- considers only the profiles with labels, without any broken label, and with the host not in any label
-	COUNT(*) > 0 AND
-	COUNT(*) = COUNT(mcpl.label_id) AND
-	COUNT(lm.label_id) = 0
+	count_profile_labels > 0 AND
+	count_profile_labels = count_non_broken_labels AND
+	count_host_labels = 0
 
 UNION
 
@@ -1209,8 +1209,8 @@ WHERE
 GROUP BY
 	profile_uuid, name, syncml
 HAVING
-	COUNT(*) > 0 AND
-	COUNT(lm.label_id) > 0
+	count_profile_labels > 0 AND
+	count_host_labels > 0
 `
 	var profiles []*fleet.ExpectedMDMProfile
 	err := sqlx.SelectContext(ctx, ds.reader(ctx), &profiles, stmt, teamID, hostID, teamID, hostID, teamID, hostID, teamID)
@@ -1289,8 +1289,8 @@ WHERE
 GROUP BY
 	profile_uuid, identifier
 HAVING
-	COUNT(*) > 0 AND
-	COUNT(lm.label_id) = COUNT(*)
+	count_profile_labels > 0 AND
+	count_host_labels = count_profile_labels
 
 UNION
 
@@ -1323,9 +1323,9 @@ GROUP BY
 	profile_uuid, identifier
 HAVING
 	-- considers only the profiles with labels, without any broken label, and with the host not in any label
-	COUNT(*) > 0 AND
-	COUNT(*) = COUNT(mcpl.label_id) AND
-	COUNT(lm.label_id) = 0
+	count_profile_labels > 0 AND
+	count_profile_labels = count_non_broken_labels AND
+	count_host_labels = 0
 
 UNION
 
@@ -1356,8 +1356,8 @@ WHERE
 GROUP BY
 	profile_uuid, identifier
 HAVING
-	COUNT(*) > 0 AND
-	COUNT(lm.label_id) > 0
+	count_profile_labels > 0 AND
+	count_host_labels > 0
 `
 
 	var rows []*fleet.ExpectedMDMProfile
@@ -1476,7 +1476,6 @@ WHERE
 func batchSetProfileLabelAssociationsDB(
 	ctx context.Context,
 	tx sqlx.ExtContext,
-	dialect DialectHelper,
 	profileLabels []fleet.ConfigurationProfileLabel,
 	profileUUIDsWithoutLabels []string,
 	platform string,
@@ -1523,10 +1522,10 @@ func batchSetProfileLabelAssociationsDB(
               (%s_profile_uuid, label_id, label_name, exclude, require_all)
           VALUES
               %s
-          ` + dialect.OnDuplicateKey("id", `
+          ON DUPLICATE KEY UPDATE
               label_id = VALUES(label_id),
               exclude = VALUES(exclude),
-			  require_all = VALUES(require_all)`) + `
+			  require_all = VALUES(require_all)
 	`
 
 	selectStmt := `
@@ -1675,7 +1674,7 @@ func (ds *Datastore) MDMInsertEULA(ctx context.Context, eula *fleet.MDMEULA) err
 
 	_, err := ds.writer(ctx).ExecContext(ctx, stmt, eula.Name, eula.Bytes, eula.Token, eula.Sha256)
 	if err != nil {
-		if ds.dialect.IsDuplicate(err) {
+		if IsDuplicate(err) {
 			return ctxerr.Wrap(ctx, alreadyExists("MDMEULA", eula.Token))
 		}
 		return ctxerr.Wrap(ctx, err, "create EULA")
@@ -1780,9 +1779,9 @@ func (ds *Datastore) SetCommandForPendingSCEPRenewal(ctx context.Context, assocs
 
 	stmt := fmt.Sprintf(`
 		INSERT INTO nano_cert_auth_associations (id, sha256, renew_command_uuid) VALUES %s
-		`+ds.dialect.OnDuplicateKey("id,sha256", `
+		ON DUPLICATE KEY UPDATE
 			renew_command_uuid = VALUES(renew_command_uuid)
-	`), strings.TrimSuffix(sb.String(), ","))
+	`, strings.TrimSuffix(sb.String(), ","))
 
 	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		res, err := tx.ExecContext(ctx, stmt, args...)
@@ -1979,7 +1978,6 @@ func (ds *Datastore) IsHostConnectedToFleetMDM(ctx context.Context, host *fleet.
 func batchSetProfileVariableAssociationsDB(
 	ctx context.Context,
 	tx sqlx.ExtContext,
-	dialect DialectHelper,
 	profileVariablesByUUID []fleet.MDMProfileUUIDFleetVariables,
 	platform string,
 ) (didUpdate bool, err error) {
@@ -2082,8 +2080,9 @@ func batchSetProfileVariableAssociationsDB(
 				fleet_variable_id
 			)
 			VALUES %s
-		`, platformPrefix, strings.TrimSuffix(valuePart, ",")) +
-			dialect.OnDuplicateKey("id", "fleet_variable_id = VALUES(fleet_variable_id)")
+			ON DUPLICATE KEY UPDATE
+				fleet_variable_id = VALUES(fleet_variable_id)
+		`, platformPrefix, strings.TrimSuffix(valuePart, ","))
 
 		_, err := tx.ExecContext(ctx, stmt, args...)
 		return err
@@ -2529,7 +2528,7 @@ func (ds *Datastore) batchSetLabelAndVariableAssociations(ctx context.Context, t
 	}
 
 	var didUpdateLabels bool
-	if didUpdateLabels, err = batchSetProfileLabelAssociationsDB(ctx, tx, ds.dialect, incomingLabels, profsWithoutLabels,
+	if didUpdateLabels, err = batchSetProfileLabelAssociationsDB(ctx, tx, incomingLabels, profsWithoutLabels,
 		platform); err != nil {
 		return false, ctxerr.Wrap(ctx, err, fmt.Sprintf("inserting %s profile label associations", platform))
 	}
@@ -2555,7 +2554,7 @@ func (ds *Datastore) batchSetLabelAndVariableAssociations(ctx context.Context, t
 
 	if len(profilesVarsToUpsert) > 0 {
 		var didUpdateVariableAssociations bool
-		if didUpdateVariableAssociations, err = batchSetProfileVariableAssociationsDB(ctx, tx, ds.dialect, profilesVarsToUpsert, platform); err != nil {
+		if didUpdateVariableAssociations, err = batchSetProfileVariableAssociationsDB(ctx, tx, profilesVarsToUpsert, platform); err != nil {
 			return false, ctxerr.Wrap(ctx, err, fmt.Sprintf("inserting %s profile variable associations", platform))
 		}
 
@@ -2707,17 +2706,14 @@ func getMDMIdPAccountByHostID(ctx context.Context, q sqlx.QueryerContext, logger
 
 func (ds *Datastore) CleanUpMDMManagedCertificates(ctx context.Context) error {
 	_, err := ds.writer(ctx).ExecContext(ctx, `
-	DELETE FROM host_mdm_managed_certificates
-WHERE NOT EXISTS (
-    SELECT 1 FROM host_mdm_apple_profiles hmap
-    WHERE hmap.host_uuid = host_mdm_managed_certificates.host_uuid
-    AND hmap.profile_uuid = host_mdm_managed_certificates.profile_uuid
-)
-AND NOT EXISTS (
-    SELECT 1 FROM host_mdm_windows_profiles hwmp
-    WHERE hwmp.host_uuid = host_mdm_managed_certificates.host_uuid
-    AND hwmp.profile_uuid = host_mdm_managed_certificates.profile_uuid
-)`)
+	DELETE hmmc FROM host_mdm_managed_certificates hmmc
+LEFT JOIN host_mdm_apple_profiles hmap ON hmmc.host_uuid = hmap.host_uuid
+    AND hmmc.profile_uuid = hmap.profile_uuid
+LEFT JOIN host_mdm_windows_profiles hwmp ON hmmc.host_uuid = hwmp.host_uuid
+    AND hmmc.profile_uuid = hwmp.profile_uuid
+WHERE
+    hmap.host_uuid IS NULL
+    AND hwmp.host_uuid IS NULL`)
 	if err != nil {
 		return ctxerr.Wrap(ctx, err, "clean up mdm certificate profiles")
 	}
@@ -2742,13 +2738,13 @@ func (ds *Datastore) BulkUpsertMDMManagedCertificates(ctx context.Context, paylo
 			  serial
             )
             VALUES %s
-            `+ds.dialect.OnDuplicateKey("host_uuid,profile_uuid,ca_name", `
+            ON DUPLICATE KEY UPDATE
               challenge_retrieved_at = VALUES(challenge_retrieved_at),
 			  not_valid_before = VALUES(not_valid_before),
 			  not_valid_after = VALUES(not_valid_after),
 			  type = VALUES(type),
 			  ca_name = VALUES(ca_name),
-			  serial = VALUES(serial)`),
+			  serial = VALUES(serial)`,
 			strings.TrimSuffix(valuePart, ","),
 		)
 
@@ -2836,14 +2832,10 @@ func (ds *Datastore) RenewMDMManagedCertificates(ctx context.Context) error {
 		ON hmmc.host_uuid = hp.host_uuid AND hmmc.profile_uuid = hp.profile_uuid
 	WHERE
 		hmmc.type = ? AND hp.status IS NOT NULL AND hp.operation_type = ?
-		AND DATEDIFF(hmmc.not_valid_after, hmmc.not_valid_before) IS NOT NULL
-		AND (
-			(DATEDIFF(hmmc.not_valid_after, hmmc.not_valid_before) > 30
-				AND hmmc.not_valid_after < DATE_ADD(NOW(), INTERVAL 30 DAY))
-			OR
-			(DATEDIFF(hmmc.not_valid_after, hmmc.not_valid_before) <= 30
-				AND hmmc.not_valid_after < DATE_ADD(NOW(), INTERVAL DATEDIFF(hmmc.not_valid_after, hmmc.not_valid_before)/2 DAY))
-		)
+	HAVING
+		validity_period IS NOT NULL AND
+		((validity_period > 30 AND not_valid_after < DATE_ADD(NOW(), INTERVAL 30 DAY)) OR
+		(validity_period <= 30 AND not_valid_after < DATE_ADD(NOW(), INTERVAL validity_period/2 DAY)))
 	LIMIT ?`, hostCertType, fleet.MDMOperationTypeInstall, limit)
 			if err != nil {
 				return ctxerr.Wrap(ctx, err, "retrieving mdm managed certificates to renew")

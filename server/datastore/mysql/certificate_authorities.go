@@ -195,12 +195,16 @@ func (ds *Datastore) NewCertificateAuthority(ctx context.Context, ca *fleet.Cert
 		return nil, err
 	}
 
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), fmt.Sprintf(sqlInsertCertificateAuthority, placeholders), args...)
+	result, err := ds.writer(ctx).ExecContext(ctx, fmt.Sprintf(sqlInsertCertificateAuthority, placeholders), args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_ca_type_name") {
 			return nil, fleet.ConflictError{Message: "a certificate authority with this name already exists"}
 		}
 		return nil, ctxerr.Wrap(ctx, err, "inserting new certificate authority")
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "getting last insert ID for new certificate authority")
 	}
 	ca.ID = uint(id) //nolint:gosec // dismiss G115
 	return ca, nil
@@ -226,8 +230,7 @@ const sqlInsertCertificateAuthority = `INSERT INTO certificate_authorities (
 	client_secret_encrypted
 ) VALUES %s`
 
-func sqlUpsertCertificateAuthority(dialect DialectHelper) string {
-	return sqlInsertCertificateAuthority + ` ` + dialect.OnDuplicateKey("name,type", `
+const sqlUpsertCertificateAuthority = sqlInsertCertificateAuthority + ` ON DUPLICATE KEY UPDATE
 	type = VALUES(type),
 	name = VALUES(name),
 	url = VALUES(url),
@@ -242,8 +245,7 @@ func sqlUpsertCertificateAuthority(dialect DialectHelper) string {
 	password_encrypted = VALUES(password_encrypted),
 	challenge_encrypted = VALUES(challenge_encrypted),
 	client_id = VALUES(client_id),
-	client_secret_encrypted = VALUES(client_secret_encrypted)`)
-}
+	client_secret_encrypted = VALUES(client_secret_encrypted)`
 
 func sqlGenerateArgsForInsertCertificateAuthority(ctx context.Context, serverPrivateKey string, ca *fleet.CertificateAuthority) ([]interface{}, string, error) {
 	var upns []byte
@@ -306,7 +308,7 @@ func sqlGenerateArgsForInsertCertificateAuthority(ctx context.Context, serverPri
 	return args, placeholders, nil
 }
 
-func batchUpsertCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, dialect DialectHelper, serverPrivateKey string, certificateAuthorities []*fleet.CertificateAuthority) error {
+func batchUpsertCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, serverPrivateKey string, certificateAuthorities []*fleet.CertificateAuthority) error {
 	if len(certificateAuthorities) == 0 {
 		return nil
 	}
@@ -323,7 +325,7 @@ func batchUpsertCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, 
 		placeholders.WriteString(fmt.Sprintf("%s,", p))
 	}
 
-	stmt := fmt.Sprintf(sqlUpsertCertificateAuthority(dialect), strings.TrimSuffix(placeholders.String(), ","))
+	stmt := fmt.Sprintf(sqlUpsertCertificateAuthority, strings.TrimSuffix(placeholders.String(), ","))
 
 	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 		return ctxerr.Wrap(ctx, err, "upserting certificate authorities")
@@ -332,7 +334,7 @@ func batchUpsertCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, 
 	return nil
 }
 
-func (ds *Datastore) batchDeleteCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, certificateAuthorities []*fleet.CertificateAuthority) error {
+func batchDeleteCertificateAuthorities(ctx context.Context, tx sqlx.ExtContext, certificateAuthorities []*fleet.CertificateAuthority) error {
 	if len(certificateAuthorities) == 0 {
 		return nil
 	}
@@ -348,7 +350,7 @@ func (ds *Datastore) batchDeleteCertificateAuthorities(ctx context.Context, tx s
 
 	_, err := tx.ExecContext(ctx, stmt, args...)
 	if err != nil {
-		if ds.dialect.IsForeignKey(err) {
+		if isMySQLForeignKey(err) {
 			return &fleet.ConflictError{
 				Message: "Couldn't delete certificate authority. " + fleet.DeleteCAReferencedByTemplatesErrMsg + ". Please remove the certificate templates first.",
 			}
@@ -366,10 +368,10 @@ func (ds *Datastore) BatchApplyCertificateAuthorities(ctx context.Context, ops f
 	upserts = append(upserts, ops.Update...)
 
 	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
-		if err := batchUpsertCertificateAuthorities(ctx, tx, ds.dialect, ds.serverPrivateKey, upserts); err != nil {
+		if err := batchUpsertCertificateAuthorities(ctx, tx, ds.serverPrivateKey, upserts); err != nil {
 			return err
 		}
-		if err := ds.batchDeleteCertificateAuthorities(ctx, tx, ops.Delete); err != nil {
+		if err := batchDeleteCertificateAuthorities(ctx, tx, ops.Delete); err != nil {
 			return err
 		}
 		return nil
@@ -394,21 +396,10 @@ func (ds *Datastore) DeleteCertificateAuthority(ctx context.Context, certificate
 		return nil, ctxerr.Wrapf(ctx, err, "check certificate authority existence")
 	}
 
-	// PG test schema has no FK constraints, so check for referencing templates manually.
-	if ds.dialect.IsPostgres() {
-		var refCount int
-		if err := sqlx.GetContext(ctx, ds.reader(ctx), &refCount,
-			"SELECT COUNT(*) FROM certificate_templates WHERE certificate_authority_id = ?", certificateAuthorityID); err == nil && refCount > 0 {
-			return nil, fleet.ConflictError{
-				Message: "Couldn't delete certificate authority. " + fleet.DeleteCAReferencedByTemplatesErrMsg + ". Please remove the certificate templates first.",
-			}
-		}
-	}
-
 	stmt = "DELETE FROM certificate_authorities WHERE id = ?"
 	result, err := ds.writer(ctx).ExecContext(ctx, stmt, certificateAuthorityID)
 	if err != nil {
-		if ds.dialect.IsForeignKey(err) {
+		if isMySQLForeignKey(err) {
 			return nil, fleet.ConflictError{
 				Message: "Couldn't delete certificate authority. " + fleet.DeleteCAReferencedByTemplatesErrMsg + ". Please remove the certificate templates first.",
 			}

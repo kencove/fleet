@@ -13,7 +13,7 @@ import (
 )
 
 func TestConditionalAccessSCEP(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string
@@ -61,8 +61,9 @@ func testGetConditionalAccessCertBySerialAndCreatedAt(t *testing.T, ds *Datastor
 	createdAt, err := ds.GetConditionalAccessCertCreatedAtByHostID(ctx, host.ID)
 	require.NoError(t, err)
 	require.NotNil(t, createdAt)
-	// Verify timestamp is reasonable (within 1 minute of now — allows for clock skew between Go and PG)
-	assert.WithinDuration(t, time.Now(), *createdAt, time.Minute)
+	// Verify timestamp is reasonable (created in the past, within last 24 hours)
+	assert.True(t, createdAt.Before(time.Now()))
+	assert.True(t, createdAt.After(time.Now().Add(-24*time.Hour)))
 
 	// Test non-existent serial
 	_, err = ds.GetConditionalAccessCertHostIDBySerialNumber(ctx, 999)
@@ -140,21 +141,14 @@ MIICEjCCAXsCAg36MA0GCSqGSIb3DQEBBQUAMIGbMQswCQYDVQQGEwJKUDEOMAwG
 
 	var serialNumber uint64
 	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
-		if ds.dialect.IsPostgres() {
-			err := sqlx.GetContext(ctx, q, &serialNumber, `INSERT INTO conditional_access_scep_serials DEFAULT VALUES RETURNING serial`)
-			if err != nil {
-				return err
-			}
-		} else {
-			result, err := q.ExecContext(ctx, `INSERT INTO conditional_access_scep_serials () VALUES ()`)
-			require.NoError(t, err)
+		result, err := q.ExecContext(ctx, `INSERT INTO conditional_access_scep_serials () VALUES ()`)
+		require.NoError(t, err)
 
-			lastID, err := result.LastInsertId()
-			require.NoError(t, err)
-			serialNumber = uint64(lastID) // nolint:gosec,G115
-		}
+		lastID, err := result.LastInsertId()
+		require.NoError(t, err)
+		serialNumber = uint64(lastID) // nolint:gosec,G115
 
-		_, err := q.ExecContext(ctx, `
+		_, err = q.ExecContext(ctx, `
 			INSERT INTO conditional_access_scep_certificates
 				(serial, host_id, name, not_valid_before, not_valid_after, certificate_pem, revoked)
 			VALUES (?, ?, ?, ?, ?, ?, ?)

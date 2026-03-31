@@ -11,10 +11,6 @@ type SqlDialect interface {
 	createVersionTableSql(name string) string // sql string to create the goose_db_version table
 	insertVersionSql(name string) string      // sql string to insert the initial version table row
 	dbVersionQuery(db *sql.DB, name string) (*sql.Rows, error)
-
-	// DriverName returns the driver name for this dialect ("mysql", "postgres", "sqlite3").
-	// Used by the migration runner to select dialect-specific UpFnMySQL/UpFnPG functions.
-	DriverName() string
 }
 
 func GetDialect() SqlDialect {
@@ -46,10 +42,8 @@ func SetDialect(d string) error {
 
 type PostgresDialect struct{}
 
-func (PostgresDialect) DriverName() string { return "postgres" }
-
 func (pg PostgresDialect) createVersionTableSql(name string) string {
-	return `CREATE TABLE IF NOT EXISTS ` + name + ` (
+	return `CREATE TABLE ` + name + ` (
             	id serial NOT NULL,
                 version_id bigint NOT NULL,
                 is_applied boolean NOT NULL,
@@ -78,10 +72,8 @@ func (pg PostgresDialect) dbVersionQuery(db *sql.DB, name string) (*sql.Rows, er
 
 type MySqlDialect struct{}
 
-func (MySqlDialect) DriverName() string { return "mysql" }
-
 func (m MySqlDialect) createVersionTableSql(name string) string {
-	return `CREATE TABLE IF NOT EXISTS ` + name + ` (
+	return `CREATE TABLE ` + name + ` (
                 id serial NOT NULL,
                 version_id bigint NOT NULL,
                 is_applied boolean NOT NULL,
@@ -109,8 +101,6 @@ func (m MySqlDialect) dbVersionQuery(db *sql.DB, name string) (*sql.Rows, error)
 ////////////////////////////
 
 type Sqlite3Dialect struct{}
-
-func (Sqlite3Dialect) DriverName() string { return "sqlite3" }
 
 func (m Sqlite3Dialect) createVersionTableSql(name string) string {
 	return `CREATE TABLE ` + name + ` (

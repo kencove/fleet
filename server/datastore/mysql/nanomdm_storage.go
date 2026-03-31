@@ -54,10 +54,9 @@ func isConflict(err error) bool {
 type NanoMDMStorage struct {
 	*nanomdm_mysql.MySQLStorage
 
-	db      *sqlx.DB
-	logger  *slog.Logger
-	ds      fleet.Datastore
-	dialect DialectHelper
+	db     *sqlx.DB
+	logger *slog.Logger
+	ds     fleet.Datastore
 }
 
 // NewMDMAppleMDMStorage returns a MySQL nanomdm storage that uses the Datastore
@@ -76,7 +75,6 @@ func (ds *Datastore) NewMDMAppleMDMStorage() (*NanoMDMStorage, error) {
 		db:           ds.primary,
 		logger:       ds.logger,
 		ds:           ds,
-		dialect:      ds.dialect,
 	}, nil
 }
 
@@ -98,7 +96,6 @@ func (ds *Datastore) NewTestMDMAppleMDMStorage(asyncCap int, asyncInterval time.
 		db:           ds.primary,
 		logger:       ds.logger,
 		ds:           ds,
-		dialect:      ds.dialect,
 	}, nil
 }
 
@@ -216,11 +213,11 @@ func (s *NanoMDMStorage) EnqueueDeviceLockCommand(
 				fleet_platform
 			)
 			VALUES (?, ?, ?, ?)
-			` + s.dialect.OnDuplicateKey("host_id", `
+			ON DUPLICATE KEY UPDATE
 				wipe_ref   = NULL,
 				unlock_ref = NULL,
 				unlock_pin = VALUES(unlock_pin),
-				lock_ref   = VALUES(lock_ref)`)
+				lock_ref   = VALUES(lock_ref)`
 
 		if _, err := tx.ExecContext(ctx, stmt, host.ID, cmd.CommandUUID, pin, host.FleetPlatform()); err != nil {
 			return ctxerr.Wrap(ctx, err, "modifying host_mdm_actions for DeviceLock")
@@ -243,9 +240,9 @@ func (s *NanoMDMStorage) EnqueueDeviceUnlockCommand(ctx context.Context, host *f
 				fleet_platform
 			)
 			VALUES (?, ?, ?)
-			` + s.dialect.OnDuplicateKey("host_id", `
+			ON DUPLICATE KEY UPDATE
 				unlock_ref = VALUES(unlock_ref),
-				unlock_pin = NULL`)
+				unlock_pin = NULL`
 
 		if _, err := tx.ExecContext(ctx, stmt, host.ID, cmd.CommandUUID, host.FleetPlatform()); err != nil {
 			return ctxerr.Wrap(ctx, err, "modifying host_mdm_actions for DeviceUnlock")
@@ -269,7 +266,8 @@ func (s *NanoMDMStorage) EnqueueDeviceWipeCommand(ctx context.Context, host *fle
 				fleet_platform
 			)
 			VALUES (?, ?, ?)
-			` + s.dialect.OnDuplicateKey("host_id", "wipe_ref = VALUES(wipe_ref)")
+			ON DUPLICATE KEY UPDATE
+				wipe_ref   = VALUES(wipe_ref)`
 
 		if _, err := tx.ExecContext(ctx, stmt, host.ID, cmd.CommandUUID, host.FleetPlatform()); err != nil {
 			return ctxerr.Wrap(ctx, err, "modifying host_mdm_actions for DeviceWipe")

@@ -15,7 +15,7 @@ import (
 )
 
 func TestVulnerabilities(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string

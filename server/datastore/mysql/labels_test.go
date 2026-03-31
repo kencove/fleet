@@ -67,7 +67,7 @@ func TestBatchHostIdsLarge(t *testing.T) {
 }
 
 func TestLabels(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string

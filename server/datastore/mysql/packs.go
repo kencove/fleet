@@ -14,7 +14,7 @@ import (
 func (ds *Datastore) ApplyPackSpecs(ctx context.Context, specs []*fleet.PackSpec) (err error) {
 	err = ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		for _, spec := range specs {
-			if err := applyPackSpecDB(ctx, tx, ds.dialect, spec); err != nil {
+			if err := applyPackSpecDB(ctx, tx, spec); err != nil {
 				return ctxerr.Wrapf(ctx, err, "applying pack '%s'", spec.Name)
 			}
 		}
@@ -25,7 +25,7 @@ func (ds *Datastore) ApplyPackSpecs(ctx context.Context, specs []*fleet.PackSpec
 	return err
 }
 
-func applyPackSpecDB(ctx context.Context, tx sqlx.ExtContext, dialect DialectHelper, spec *fleet.PackSpec) error {
+func applyPackSpecDB(ctx context.Context, tx sqlx.ExtContext, spec *fleet.PackSpec) error {
 	if spec.Name == "" {
 		return ctxerr.New(ctx, "pack name must not be empty")
 	}
@@ -34,11 +34,11 @@ func applyPackSpecDB(ctx context.Context, tx sqlx.ExtContext, dialect DialectHel
 	query := `
 		INSERT INTO packs (name, description, platform, disabled)
 		VALUES (?, ?, ?, ?)
-		` + dialect.OnDuplicateKey("name", `
+		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			platform = VALUES(platform),
-			disabled = VALUES(disabled)`) + `
+			disabled = VALUES(disabled)
 	`
 	if _, err := tx.ExecContext(ctx, query, spec.Name, spec.Description, spec.Platform, spec.Disabled); err != nil {
 		return ctxerr.Wrap(ctx, err, "insert/update pack")
@@ -266,11 +266,12 @@ func (ds *Datastore) NewPack(ctx context.Context, pack *fleet.Pack, opts ...flee
 			(name, description, platform, disabled)
 			VALUES ( ?, ?, ?, ? )
 		`
-		id, err := insertAndGetIDTx(ctx, tx, ds.dialect, query, pack.Name, pack.Description, pack.Platform, pack.Disabled)
+		result, err := tx.ExecContext(ctx, query, pack.Name, pack.Description, pack.Platform, pack.Disabled)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "insert pack")
 		}
 
+		id, _ := result.LastInsertId()
 		pack.ID = uint(id) //nolint:gosec // dismiss G115
 
 		if err := replacePackTargetsDB(ctx, tx, pack); err != nil {
@@ -479,8 +480,13 @@ func listPacksForHost(ctx context.Context, db sqlx.QueryerContext, hid uint) ([]
 	SELECT DISTINCT packs.* FROM (
 	(
 		SELECT p.* FROM packs p
-		JOIN pack_targets pt ON p.id = pt.pack_id AND pt.type = ?
-		JOIN label_membership lm ON pt.target_id = lm.label_id
+		JOIN pack_targets pt
+		JOIN label_membership lm
+		ON (
+			p.id = pt.pack_id
+			AND pt.target_id = lm.label_id
+			AND pt.type = ?
+		)
 		WHERE lm.host_id = ? AND NOT p.disabled AND p.pack_type IS NULL
 	)
 	UNION ALL

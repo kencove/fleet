@@ -53,9 +53,13 @@ UNION
 func (ds *Datastore) InsertCronStats(ctx context.Context, statsType fleet.CronStatsType, name string, instance string, status fleet.CronStatsStatus) (int, error) {
 	stmt := `INSERT INTO cron_stats (stats_type, name, instance, status) VALUES (?, ?, ?, ?)`
 
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), stmt, statsType, name, instance, status)
+	res, err := ds.writer(ctx).ExecContext(ctx, stmt, statsType, name, instance, status)
 	if err != nil {
 		return 0, ctxerr.Wrap(ctx, err, "insert cron stats")
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, ctxerr.Wrap(ctx, err, "insert cron stats last insert id")
 	}
 
 	return int(id), nil
@@ -115,17 +119,17 @@ func (ds *Datastore) CleanupCronStats(ctx context.Context) error {
 		// WithAltLockID (e.g., "leader", "worker") store locks under a different name, so
 		// the NOT EXISTS check won't find their lock and they fall back to the 2-hour timeout.
 		updateStmt := `
-			UPDATE cron_stats
-			SET status = ?
-			WHERE status IN (?, ?)
+			UPDATE cron_stats cs
+			SET cs.status = ?
+			WHERE cs.status IN (?, ?)
 			AND (
-				(created_at < DATE_SUB(NOW(), INTERVAL 2 HOUR)
+				(cs.created_at < DATE_SUB(NOW(), INTERVAL 2 HOUR)
 				AND NOT EXISTS (
 					SELECT 1 FROM locks l
-					WHERE l.name = cron_stats.name
+					WHERE l.name = cs.name
 					AND l.expires_at >= CURRENT_TIMESTAMP
 				))
-				OR created_at < DATE_SUB(NOW(), INTERVAL 12 HOUR)
+				OR cs.created_at < DATE_SUB(NOW(), INTERVAL 12 HOUR)
 			)`
 		if _, err := tx.ExecContext(ctx, updateStmt, fleet.CronStatsStatusExpired, fleet.CronStatsStatusPending, fleet.CronStatsStatusQueued); err != nil {
 			return ctxerr.Wrap(ctx, err, "updating expired cron stats")

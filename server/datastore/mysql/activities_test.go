@@ -24,7 +24,7 @@ import (
 )
 
 func TestActivity(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string
@@ -646,14 +646,8 @@ func testCleanupExpiredLiveQueriesBatch(t *testing.T, ds *Datastore) {
 	require.Equal(t, 1500, queriesLen)
 
 	// Make 1250 queries expired.
-	// Use a subquery to select the first 1250 unsaved queries by id, rather than
-	// hardcoding id <= 1250 which fails when PG auto-increment IDs don't start at 1.
-	// The double-nested subquery is needed for MySQL which forbids direct subqueries
-	// on the table being updated.
 	_, err = ds.writer(context.Background()).Exec(`
-		UPDATE queries SET created_at = ? WHERE id IN (
-			SELECT id FROM (SELECT id FROM queries WHERE NOT saved ORDER BY id LIMIT 1250) AS tmp
-		)`,
+		UPDATE queries SET created_at = ? WHERE id <= 1250`,
 		time.Now().Add(-48*time.Hour),
 	)
 	require.NoError(t, err)
@@ -1990,20 +1984,16 @@ func testActivateScriptPackageInstallWithCorruptPayload(t *testing.T, ds *Datast
 	host := test.NewHost(t, ds, "host1", "192.168.1.1", "1", "1", time.Now())
 
 	titleStmt := `INSERT INTO software_titles (name, source, extension_for) VALUES (?, ?, '')`
-	_, err := ds.writer(ctx).ExecContext(ctx, titleStmt, "Test Script", "sh_packages")
+	res, err := ds.writer(ctx).ExecContext(ctx, titleStmt, "Test Script", "sh_packages")
 	require.NoError(t, err)
-	var titleID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &titleID, `SELECT id FROM software_titles WHERE name = ? AND source = ?`, "Test Script", "sh_packages")
-	require.NoError(t, err)
+	titleID, _ := res.LastInsertId()
 
 	u := test.NewUser(t, ds, "user1", "user1@example.com", false)
 
 	scriptContentStmt := `INSERT INTO script_contents (md5_checksum, contents) VALUES (?, ?)`
-	_, err = ds.writer(ctx).ExecContext(ctx, scriptContentStmt, "abc123", "#!/bin/bash\necho 'test'")
+	res, err = ds.writer(ctx).ExecContext(ctx, scriptContentStmt, "abc123", "#!/bin/bash\necho 'test'")
 	require.NoError(t, err)
-	var scriptContentID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &scriptContentID, `SELECT id FROM script_contents WHERE contents = ?`, "#!/bin/bash\necho 'test'")
-	require.NoError(t, err)
+	scriptContentID, _ := res.LastInsertId()
 
 	installerStmt := `
 		INSERT INTO software_installers (
@@ -2015,21 +2005,17 @@ func testActivateScriptPackageInstallWithCorruptPayload(t *testing.T, ds *Datast
 		)
 		VALUES (NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
 	`
-	_, err = ds.writer(ctx).ExecContext(ctx, installerStmt,
+	res, err = ds.writer(ctx).ExecContext(ctx, installerStmt,
 		titleID, "storage-123", "test-script.sh", "sh", "", "linux", scriptContentID,
-		"", scriptContentID, false, u.ID, u.Name, u.Email, "", "", "", "")
+		"", scriptContentID, 0, u.ID, u.Name, u.Email, "", "", "", "")
 	require.NoError(t, err)
-	var installerID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &installerID, `SELECT id FROM software_installers WHERE storage_id = ?`, "storage-123")
-	require.NoError(t, err)
+	installerID, _ := res.LastInsertId()
 
 	execID := uuid.NewString()
 	uaStmt := `INSERT INTO upcoming_activities (host_id, priority, activity_type, execution_id, payload) VALUES (?, 1, 'software_install', ?, JSON_OBJECT())`
-	_, err = ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
+	res, err = ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
 	require.NoError(t, err)
-	var activityID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &activityID, `SELECT id FROM upcoming_activities WHERE execution_id = ?`, execID)
-	require.NoError(t, err)
+	activityID, _ := res.LastInsertId()
 
 	siuaStmt := `INSERT INTO software_install_upcoming_activities (upcoming_activity_id, software_installer_id, policy_id, software_title_id) VALUES (?, ?, NULL, NULL)`
 	_, err = ds.writer(ctx).ExecContext(ctx, siuaStmt, activityID, installerID)
@@ -2133,11 +2119,9 @@ func testActivateDeletedInstallerShowsPlaceholder(t *testing.T, ds *Datastore) {
 
 	execID := uuid.NewString()
 	uaStmt := `INSERT INTO upcoming_activities (host_id, priority, activity_type, execution_id, payload) VALUES (?, 1, 'software_install', ?, JSON_OBJECT())`
-	_, err = ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
+	res, err := ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
 	require.NoError(t, err)
-	var activityID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &activityID, `SELECT id FROM upcoming_activities WHERE execution_id = ?`, execID)
-	require.NoError(t, err)
+	activityID, _ := res.LastInsertId()
 
 	siuaStmt := `INSERT INTO software_install_upcoming_activities (upcoming_activity_id, software_installer_id, policy_id, software_title_id) VALUES (?, ?, NULL, NULL)`
 	_, err = ds.writer(ctx).ExecContext(ctx, siuaStmt, activityID, installerID)
@@ -2175,20 +2159,16 @@ func testActivateScriptPackageUninstallWithCorruptPayload(t *testing.T, ds *Data
 	ctx := context.Background()
 
 	titleStmt := `INSERT INTO software_titles (name, source, extension_for) VALUES ('Test Uninstall Script', 'apps', '')`
-	_, err := ds.writer(ctx).ExecContext(ctx, titleStmt)
+	res, err := ds.writer(ctx).ExecContext(ctx, titleStmt)
 	require.NoError(t, err)
-	var titleID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &titleID, `SELECT id FROM software_titles WHERE name = ? AND source = ?`, "Test Uninstall Script", "apps")
-	require.NoError(t, err)
+	titleID, _ := res.LastInsertId()
 
 	u := test.NewUser(t, ds, "uninstall-user", "uninstall@example.com", false)
 
 	scriptStmt := `INSERT INTO script_contents (md5_checksum, contents) VALUES (UNHEX(MD5('echo uninstalling')), 'echo uninstalling')`
-	_, err = ds.writer(ctx).ExecContext(ctx, scriptStmt)
+	res, err = ds.writer(ctx).ExecContext(ctx, scriptStmt)
 	require.NoError(t, err)
-	var scriptContentID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &scriptContentID, `SELECT id FROM script_contents WHERE contents = ?`, "echo uninstalling")
-	require.NoError(t, err)
+	scriptContentID, _ := res.LastInsertId()
 
 	installerStmt := `
 		INSERT INTO software_installers (
@@ -2200,23 +2180,19 @@ func testActivateScriptPackageUninstallWithCorruptPayload(t *testing.T, ds *Data
 		)
 		VALUES (NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
 	`
-	_, err = ds.writer(ctx).ExecContext(ctx, installerStmt,
+	res, err = ds.writer(ctx).ExecContext(ctx, installerStmt,
 		titleID, "storage-id-uninstall", "test-uninstall.sh", "sh", "", "linux", scriptContentID,
-		"", scriptContentID, false, u.ID, u.Name, u.Email, "", "", "", "")
+		"", scriptContentID, 0, u.ID, u.Name, u.Email, "", "", "", "")
 	require.NoError(t, err)
-	var installerID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &installerID, `SELECT id FROM software_installers WHERE storage_id = ?`, "storage-id-uninstall")
-	require.NoError(t, err)
+	installerID, _ := res.LastInsertId()
 
 	host := test.NewHost(t, ds, "test-host", "", "test-key", "test-uuid", time.Now())
 
 	execID := "uninstall-exec-123"
 	uaStmt := `INSERT INTO upcoming_activities (host_id, activity_type, execution_id, user_id, payload, priority) VALUES (?, 'software_uninstall', ?, NULL, JSON_OBJECT(), 0)`
-	_, err = ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
+	res, err = ds.writer(ctx).ExecContext(ctx, uaStmt, host.ID, execID)
 	require.NoError(t, err)
-	var activityID int64
-	err = sqlx.GetContext(ctx, ds.writer(ctx), &activityID, `SELECT id FROM upcoming_activities WHERE execution_id = ?`, execID)
-	require.NoError(t, err)
+	activityID, _ := res.LastInsertId()
 
 	siuaStmt := `INSERT INTO software_install_upcoming_activities (upcoming_activity_id, software_installer_id, software_title_id) VALUES (?, ?, NULL)`
 	_, err = ds.writer(ctx).ExecContext(ctx, siuaStmt, activityID, installerID)

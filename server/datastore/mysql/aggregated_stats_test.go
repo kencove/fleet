@@ -46,7 +46,7 @@ func slowStats(t *testing.T, ds *Datastore, id uint, percentile int, column stri
 }
 
 func TestAggregatedStats(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	var args []interface{}
 

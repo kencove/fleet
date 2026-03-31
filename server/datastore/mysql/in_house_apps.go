@@ -109,9 +109,9 @@ func (ds *Datastore) insertInHouseAppDB(ctx context.Context, tx sqlx.ExtContext,
 	)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	id64, err := insertAndGetIDTx(ctx, tx, ds.dialect, stmt, args...)
+	res, err := tx.ExecContext(ctx, stmt, args...)
 	if err != nil {
-		if ds.dialect.IsDuplicate(err) {
+		if IsDuplicate(err) {
 			teamName, err := ds.getTeamName(ctx, payload.TeamID)
 			if err != nil {
 				return 0, ctxerr.Wrap(ctx, err)
@@ -121,9 +121,13 @@ func (ds *Datastore) insertInHouseAppDB(ctx context.Context, tx sqlx.ExtContext,
 		}
 		return 0, ctxerr.Wrap(ctx, err, "insertInHouseAppDB")
 	}
+	id64, err := res.LastInsertId()
 	installerID := uint(id64) //nolint:gosec // dismiss G115
+	if err != nil {
+		return 0, ctxerr.Wrap(ctx, err, "insertInHouseAppDB")
+	}
 
-	if err := setOrUpdateSoftwareInstallerLabelsDB(ctx, tx, ds.dialect, installerID, *payload.ValidatedLabels, softwareTypeInHouseApp); err != nil {
+	if err := setOrUpdateSoftwareInstallerLabelsDB(ctx, tx, installerID, *payload.ValidatedLabels, softwareTypeInHouseApp); err != nil {
 		return 0, ctxerr.Wrap(ctx, err, "insertInHouseAppDB")
 	}
 
@@ -282,7 +286,7 @@ func (ds *Datastore) SaveInHouseAppUpdates(ctx context.Context, payload *fleet.U
 		}
 
 		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
-			if ds.dialect.IsDuplicate(err) {
+			if IsDuplicate(err) {
 				teamName, err := ds.getTeamName(ctx, payload.TeamID)
 				if err != nil {
 					return ctxerr.Wrap(ctx, err)
@@ -293,7 +297,7 @@ func (ds *Datastore) SaveInHouseAppUpdates(ctx context.Context, payload *fleet.U
 		}
 
 		if payload.ValidatedLabels != nil {
-			if err := setOrUpdateSoftwareInstallerLabelsDB(ctx, tx, ds.dialect, payload.InstallerID, *payload.ValidatedLabels, softwareTypeInHouseApp); err != nil {
+			if err := setOrUpdateSoftwareInstallerLabelsDB(ctx, tx, payload.InstallerID, *payload.ValidatedLabels, softwareTypeInHouseApp); err != nil {
 				return ctxerr.Wrap(ctx, err, "upsert in house app labels")
 			}
 		}
@@ -305,7 +309,7 @@ func (ds *Datastore) SaveInHouseAppUpdates(ctx context.Context, payload *fleet.U
 		}
 
 		if payload.DisplayName != nil {
-			if err := updateSoftwareTitleDisplayName(ctx, tx, ds.dialect, payload.TeamID, payload.TitleID, *payload.DisplayName); err != nil {
+			if err := updateSoftwareTitleDisplayName(ctx, tx, payload.TeamID, payload.TitleID, *payload.DisplayName); err != nil {
 				return ctxerr.Wrap(ctx, err, "update in house app display name")
 			}
 		}
@@ -524,7 +528,7 @@ VALUES
 	}
 
 	err = ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
-		activityID, err := insertAndGetIDTx(ctx, tx, ds.dialect, insertUAStmt,
+		res, err := tx.ExecContext(ctx, insertUAStmt,
 			hostID,
 			opts.Priority(),
 			userID,
@@ -536,6 +540,8 @@ VALUES
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "insert in house app install request")
 		}
+
+		activityID, _ := res.LastInsertId()
 		_, err = tx.ExecContext(ctx, insertIHAUAStmt,
 			activityID,
 			inHouseAppID,
@@ -728,17 +734,17 @@ WHERE
 }
 
 func (ds *Datastore) BatchSetInHouseAppsInstallers(ctx context.Context, tmID *uint, installers []*fleet.UploadSoftwareInstallerPayload) error {
-	upsertSoftwareTitles := `
+	const upsertSoftwareTitles = `
 INSERT INTO software_titles
   (name, source, extension_for, bundle_identifier)
 VALUES
   %s
-` + ds.dialect.OnDuplicateKey("id", `
+ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   source = VALUES(source),
   extension_for = VALUES(extension_for),
   bundle_identifier = VALUES(bundle_identifier)
-`)
+`
 
 	const loadSoftwareTitles = `
 SELECT
@@ -910,7 +916,7 @@ WHERE
 	title_id = ?
 `
 
-	insertNewOrEditedInstaller := `
+	const insertNewOrEditedInstaller = `
 INSERT INTO in_house_apps (
 	title_id,
 	team_id,
@@ -925,7 +931,7 @@ INSERT INTO in_house_apps (
 ) VALUES (
   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
-` + ds.dialect.OnDuplicateKey("id", `
+ON DUPLICATE KEY UPDATE
   filename = VALUES(filename),
   version = VALUES(version),
   storage_id = VALUES(storage_id),
@@ -933,7 +939,7 @@ INSERT INTO in_house_apps (
   bundle_identifier = VALUES(bundle_identifier),
   self_service = VALUES(self_service),
   url = VALUES(url)
-`)
+`
 
 	const loadInHouseInstallerID = `
 SELECT
@@ -962,7 +968,7 @@ WHERE
 	in_house_app_id = ?
 `
 
-	upsertInHouseLabels := `
+	const upsertInHouseLabels = `
 INSERT INTO
 	in_house_app_labels (
 		in_house_app_id,
@@ -972,10 +978,10 @@ INSERT INTO
 	)
 VALUES
 	%s
-` + ds.dialect.OnDuplicateKey("id", `
+ON DUPLICATE KEY UPDATE
 	exclude = VALUES(exclude),
 	require_all = VALUES(require_all)
-`)
+`
 
 	const loadExistingInHouseLabels = `
 SELECT
@@ -1003,7 +1009,8 @@ WHERE
 	software_category_id NOT IN (?)
 `
 
-	const upsertInHouseCategoriesSuffix = `
+	const upsertInHouseCategories = `
+INSERT IGNORE INTO
 	in_house_app_software_categories (
 		in_house_app_id,
 		software_category_id
@@ -1389,7 +1396,7 @@ WHERE
 					upsertCategoriesArgs = append(upsertCategoriesArgs, installerID, catID)
 				}
 				upsertCategoriesValues := strings.TrimSuffix(strings.Repeat("(?,?),", len(installer.CategoryIDs)), ",")
-				_, err = tx.ExecContext(ctx, ds.dialect.InsertIgnoreInto()+fmt.Sprintf(upsertInHouseCategoriesSuffix, upsertCategoriesValues)+ds.dialect.OnConflictDoNothing("in_house_app_id,software_category_id"), upsertCategoriesArgs...)
+				_, err = tx.ExecContext(ctx, fmt.Sprintf(upsertInHouseCategories, upsertCategoriesValues), upsertCategoriesArgs...)
 				if err != nil {
 					return ctxerr.Wrapf(ctx, err, "insert new/edited categories for in-house with name %q", installer.Filename)
 				}
@@ -1398,7 +1405,7 @@ WHERE
 			// update display name for the software title if it needs to be updated or inserted
 			// no deletions will happen, display names will be set to empty if needed
 			if name, ok := displayNameIDMap[titleID]; (ok && name != installer.DisplayName) || (!ok && installer.DisplayName != "") {
-				if err := updateSoftwareTitleDisplayName(ctx, tx, ds.dialect, tmID, titleID, installer.DisplayName); err != nil {
+				if err := updateSoftwareTitleDisplayName(ctx, tx, tmID, titleID, installer.DisplayName); err != nil {
 					return ctxerr.Wrapf(ctx, err, "update software title display name for in-house app with name %q", installer.Filename)
 				}
 			}

@@ -141,10 +141,11 @@ func (ds *Datastore) CreateHostConditionalAccessStatus(ctx context.Context, host
 		`INSERT INTO microsoft_compliance_partner_host_statuses
 		(host_id, device_id, user_principal_name)
 		VALUES (?, ?, ?)
-		`+ds.dialect.OnDuplicateKey("host_id", `device_id = VALUES(device_id),
+		ON DUPLICATE KEY UPDATE
+		device_id = VALUES(device_id),
 		user_principal_name = VALUES(user_principal_name),
 		managed = NULL,
-		compliant = NULL`),
+		compliant = NULL`,
 		hostID, deviceID, userPrincipalName,
 	); err != nil {
 		return ctxerr.Wrap(ctx, err, "create host conditional access status")

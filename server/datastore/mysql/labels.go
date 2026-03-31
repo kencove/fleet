@@ -190,7 +190,7 @@ func (ds *Datastore) ApplyLabelSpecsWithAuthor(ctx context.Context, specs []*fle
 			}
 		}
 
-		insertSQL := `
+		sql := `
 		INSERT INTO labels (
 			name,
 			description,
@@ -202,7 +202,7 @@ func (ds *Datastore) ApplyLabelSpecsWithAuthor(ctx context.Context, specs []*fle
 			author_id,
 			team_id
 		) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )
-		` + ds.dialect.OnDuplicateKey("name", `
+		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			query = VALUES(query),
@@ -210,13 +210,23 @@ func (ds *Datastore) ApplyLabelSpecsWithAuthor(ctx context.Context, specs []*fle
 			label_type = VALUES(label_type),
 			label_membership_type = VALUES(label_membership_type),
 			criteria = VALUES(criteria)
-		`)
+		`
+
+		prepTx, ok := tx.(sqlx.PreparerContext)
+		if !ok {
+			return ctxerr.New(ctx, "tx in ApplyLabelSpecs is not a sqlx.PreparerContext")
+		}
+		stmt, err := prepTx.PrepareContext(ctx, sql)
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "prepare ApplyLabelSpecs insert")
+		}
+		defer stmt.Close()
 
 		for _, s := range specs {
 			if s.Name == "" {
 				return ctxerr.New(ctx, "label name must not be empty")
 			}
-			insertedID, err := insertAndGetIDTx(ctx, tx, ds.dialect, insertSQL, s.Name, s.Description, s.Query, s.Platform, s.LabelType, s.LabelMembershipType, s.HostVitalsCriteria, authorID, s.TeamID)
+			insertLabelResult, err := stmt.ExecContext(ctx, s.Name, s.Description, s.Query, s.Platform, s.LabelType, s.LabelMembershipType, s.HostVitalsCriteria, authorID, s.TeamID)
 			if err != nil {
 				return ctxerr.Wrap(ctx, err, "exec ApplyLabelSpecs insert")
 			}
@@ -252,12 +262,18 @@ func (ds *Datastore) ApplyLabelSpecsWithAuthor(ctx context.Context, specs []*fle
 				// Use the existing label ID
 				labelID = existing.ID
 			} else {
-				// New label - use the ID from the insert
-				labelID = uint(insertedID) //nolint:gosec
+				// New label - fetch the ID we just created
+				id, err := insertLabelResult.LastInsertId()
+				if err != nil {
+					return ctxerr.Wrap(ctx, err, "get new label ID for manual membership")
+				}
+				labelID = uint(id) //nolint:gosec
 			}
 
-			delSQL := `DELETE FROM label_membership WHERE label_id = ?`
-			_, err = tx.ExecContext(ctx, delSQL, labelID)
+			sql = `
+DELETE FROM label_membership WHERE label_id = ?
+`
+			_, err = tx.ExecContext(ctx, sql, labelID)
 			if err != nil {
 				return ctxerr.Wrap(ctx, err, "clear membership for ID")
 			}
@@ -307,15 +323,15 @@ func (ds *Datastore) ApplyLabelSpecsWithAuthor(ctx context.Context, specs []*fle
 
 				// Use ignore because duplicate hostnames could appear in
 				// different batches and would result in duplicate key errors.
-				memberSQL := fmt.Sprintf(
-					ds.dialect.InsertIgnoreInto()+` label_membership (label_id, host_id) (SELECT DISTINCT ?, id FROM hosts WHERE %s)`+ds.dialect.OnConflictDoNothing("host_id,label_id"),
+				sql = fmt.Sprintf(
+					`INSERT IGNORE INTO label_membership (label_id, host_id) (SELECT DISTINCT ?, id FROM hosts WHERE %s)`,
 					hostsFilterClause,
 				)
-				memberSQL, args, err := sqlx.In(memberSQL, labelID, stringIdents, stringIdents, stringIdents, intIdents)
+				sql, args, err := sqlx.In(sql, labelID, stringIdents, stringIdents, stringIdents, intIdents)
 				if err != nil {
 					return ctxerr.Wrap(ctx, err, "build membership IN statement")
 				}
-				_, err = tx.ExecContext(ctx, memberSQL, args...)
+				_, err = tx.ExecContext(ctx, sql, args...)
 				if err != nil {
 					return ctxerr.Wrap(ctx, err, "execute membership INSERT")
 				}
@@ -413,8 +429,9 @@ func (ds *Datastore) UpdateLabelMembershipByHostIDs(ctx context.Context, label f
 			}
 
 			// Build the final SQL query with the dynamically generated placeholders
-			sql := ds.dialect.InsertIgnoreInto() + ` label_membership (label_id, host_id)
-VALUES ` + strings.Join(placeholders, ", ") + ds.dialect.OnConflictDoNothing("host_id,label_id")
+			sql := `
+INSERT IGNORE INTO label_membership (label_id, host_id)
+VALUES ` + strings.Join(placeholders, ", ")
 			sql, args, err := sqlx.In(sql, values...)
 			if err != nil {
 				return ctxerr.Wrap(ctx, err, "build membership IN statement")
@@ -465,7 +482,7 @@ func (ds *Datastore) UpdateLabelMembershipByHostCriteria(ctx context.Context, hv
 
 	err = ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		// Insert new label membership based on the label query.
-		sql := fmt.Sprintf(`INSERT INTO label_membership (label_id, host_id) SELECT candidate.label_id, candidate.host_id FROM (%s) as candidate `+ds.dialect.OnDuplicateKey("host_id,label_id", `host_id = label_membership.host_id`), labelQuery)
+		sql := fmt.Sprintf(`INSERT INTO label_membership (label_id, host_id) SELECT candidate.label_id, candidate.host_id FROM (%s) as candidate ON DUPLICATE KEY UPDATE host_id = label_membership.host_id`, labelQuery)
 		_, err := tx.ExecContext(ctx, sql, queryVals...)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "execute membership INSERT")
@@ -603,7 +620,9 @@ func (ds *Datastore) NewLabel(ctx context.Context, label *fleet.Label, opts ...f
 		team_id
 	) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )
 	`
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), query,
+	result, err := ds.writer(ctx).ExecContext(
+		ctx,
+		query,
 		label.Name,
 		label.Description,
 		label.Query,
@@ -618,6 +637,7 @@ func (ds *Datastore) NewLabel(ctx context.Context, label *fleet.Label, opts ...f
 		return nil, ctxerr.Wrap(ctx, err, "inserting label")
 	}
 
+	id, _ := result.LastInsertId()
 	label.ID = uint(id) //nolint:gosec // dismiss G115
 	now := time.Now().UTC().Truncate(time.Second)
 	label.CreatedAt = now
@@ -660,7 +680,7 @@ func (ds *Datastore) DeleteLabel(ctx context.Context, name string, filter fleet.
 			return ctxerr.Wrap(ctx, err, "getting label id to delete")
 		}
 		if err := deleteLabelsInTx(ctx, tx, []uint{labelID}); err != nil {
-			if ds.dialect.IsForeignKey(err) {
+			if isMySQLForeignKey(err) {
 				return ctxerr.Wrap(ctx, foreignKey("labels", name), "delete label")
 			}
 			return ctxerr.Wrap(ctx, err, "delete labels in tx")
@@ -913,7 +933,7 @@ func (ds *Datastore) RecordLabelQueryExecutions(ctx context.Context, host *fleet
 		// Complete inserts if necessary
 		if len(vals) > 0 {
 			sql := `INSERT INTO label_membership (updated_at, label_id, host_id) VALUES `
-			sql += strings.Join(bindvars, ",") + ` ` + ds.dialect.OnDuplicateKey("host_id,label_id", `updated_at = VALUES(updated_at)`)
+			sql += strings.Join(bindvars, ",") + ` ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)`
 
 			_, err := tx.ExecContext(ctx, sql, vals...)
 			if err != nil {
@@ -976,8 +996,8 @@ func (ds *Datastore) RecordLabelQueryExecutions(ctx context.Context, host *fleet
 func (ds *Datastore) ListLabelsForHost(ctx context.Context, hid uint) ([]*fleet.Label, error) {
 	sqlStatement := `
 		SELECT labels.* from labels JOIN label_membership lm
-		ON lm.label_id = labels.id
 		WHERE lm.host_id = ?
+		AND lm.label_id = labels.id
 	`
 
 	labels := []*fleet.Label{}
@@ -1081,11 +1101,11 @@ func (ds *Datastore) ListHostsInLabel(ctx context.Context, filter fleet.TeamFilt
 	deviceMappingJoin := fmt.Sprintf(`LEFT JOIN (
 	SELECT
 		host_id,
-		CONCAT('[', %s, ']') AS device_mapping
+		CONCAT('[', GROUP_CONCAT(JSON_OBJECT('email', email, 'source', %s)), ']') AS device_mapping
 	FROM
 		host_emails
 	GROUP BY
-		host_id) dm ON dm.host_id = h.id`, ds.dialect.GroupConcat(fmt.Sprintf("JSON_OBJECT('email', email, 'source', %s)", deviceMappingTranslateSourceColumn("")), ","))
+		host_id) dm ON dm.host_id = h.id`, deviceMappingTranslateSourceColumn(""))
 	if !opt.DeviceMapping {
 		deviceMappingJoin = ""
 	}
@@ -1262,11 +1282,10 @@ func (ds *Datastore) searchLabelsWithOmits(ctx context.Context, filter fleet.Tea
 				) AS host_count
 			FROM labels l
 			WHERE (
-				%s
+				MATCH(l.name) AGAINST(? IN BOOLEAN MODE)
 			)
 			AND l.id NOT IN (?)
 		`, ds.whereFilterHostsByTeams(filter, "h"),
-		ds.dialect.FullTextMatch([]string{"l.name"}, "?"),
 	)
 
 	sql, args, err := applyLabelTeamFilter(sqlStatement, filter, transformQuery(query), omit)
@@ -1394,10 +1413,9 @@ func (ds *Datastore) SearchLabels(ctx context.Context, filter fleet.TeamFilter, 
 					) AS host_count
 				FROM labels l
 			WHERE (
-				%s
+				MATCH(name) AGAINST(? IN BOOLEAN MODE)
 			)
 		`, ds.whereFilterHostsByTeams(filter, "h"),
-		ds.dialect.FullTextMatch([]string{"name"}, "?"),
 	)
 
 	sql, args, err := applyLabelTeamFilter(sql, filter, transformQuery(query))
@@ -1474,7 +1492,7 @@ func (ds *Datastore) AsyncBatchInsertLabelMembership(ctx context.Context, batch 
 	sql := `INSERT INTO label_membership (label_id, host_id) VALUES `
 	sql += strings.Repeat(`(?, ?),`, len(batch))
 	sql = strings.TrimSuffix(sql, ",")
-	sql += ` ` + ds.dialect.OnDuplicateKey("host_id,label_id", `updated_at = VALUES(updated_at)`)
+	sql += ` ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)`
 
 	vals := make([]interface{}, 0, len(batch)*2)
 	for _, tup := range batch {
@@ -1492,18 +1510,7 @@ func (ds *Datastore) AsyncBatchDeleteLabelMembership(ctx context.Context, batch 
 	// NOTE: this is tested via the server/service/async package tests.
 
 	rest := strings.Repeat(`UNION ALL SELECT ?, ? `, len(batch)-1)
-	var sql string
-	if ds.dialect.IsPostgres() {
-		sql = fmt.Sprintf(`
-    DELETE FROM
-      label_membership
-    USING
-      (SELECT ?::integer AS label_id, ?::integer AS host_id %s) del_list
-    WHERE
-      label_membership.label_id = del_list.label_id AND
-      label_membership.host_id = del_list.host_id`, strings.ReplaceAll(rest, "SELECT ?, ?", "SELECT ?::integer, ?::integer"))
-	} else {
-		sql = fmt.Sprintf(`
+	sql := fmt.Sprintf(`
     DELETE
       lm
     FROM
@@ -1513,7 +1520,6 @@ func (ds *Datastore) AsyncBatchDeleteLabelMembership(ctx context.Context, batch 
     ON
       lm.label_id = del_list.label_id AND
       lm.host_id = del_list.host_id`, rest)
-	}
 
 	vals := make([]interface{}, 0, len(batch)*2)
 	for _, tup := range batch {
@@ -1606,7 +1612,7 @@ func (ds *Datastore) AddLabelsToHost(ctx context.Context, hostID uint, labelIDs 
 	sql := `INSERT INTO label_membership (host_id, label_id) VALUES `
 	sql += strings.Repeat(`(?, ?),`, len(labelIDs))
 	sql = strings.TrimSuffix(sql, ",")
-	sql += ` ` + ds.dialect.OnDuplicateKey("host_id,label_id", `updated_at = NOW()`)
+	sql += ` ON DUPLICATE KEY UPDATE updated_at = NOW()`
 	args := make([]interface{}, 0, len(labelIDs)*2)
 	for _, labelID := range labelIDs {
 		args = append(args, hostID, labelID)

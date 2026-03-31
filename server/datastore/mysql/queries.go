@@ -65,7 +65,7 @@ func (ds *Datastore) applyQueriesInTx(
 		}
 	}
 
-	upsertQueriesSQL := `
+	const upsertQueriesSQL = `
 		INSERT INTO queries (
 			name,
 			description,
@@ -82,7 +82,8 @@ func (ds *Datastore) applyQueriesInTx(
 			logging_type,
 			discard_data
 		) VALUES %s
-		` + ds.dialect.OnDuplicateKey("id", `name = VALUES(name),
+		ON DUPLICATE KEY UPDATE
+			name = VALUES(name),
 			description = VALUES(description),
 			query = VALUES(query),
 			author_id = VALUES(author_id),
@@ -95,7 +96,7 @@ func (ds *Datastore) applyQueriesInTx(
 			schedule_interval = VALUES(schedule_interval),
 			automations_enabled = VALUES(automations_enabled),
 			logging_type = VALUES(logging_type),
-			discard_data = VALUES(discard_data)`)
+			discard_data = VALUES(discard_data)`
 
 	// 'queries' are uniquely identified by {name, team_id}
 	unqKeyGen := func(name string, teamID *uint) string {
@@ -278,9 +279,8 @@ func (ds *Datastore) NewQuery(
 		) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )
 	`
 
-	id, err := ds.insertAndGetID(
+	result, err := ds.writer(ctx).ExecContext(
 		ctx,
-		ds.writer(ctx),
 		queryStatement,
 		query.Name,
 		query.Description,
@@ -300,12 +300,13 @@ func (ds *Datastore) NewQuery(
 		query.UpdatedAt,
 	)
 
-	if err != nil && ds.dialect.IsDuplicate(err) {
+	if err != nil && IsDuplicate(err) {
 		return nil, ctxerr.Wrap(ctx, alreadyExists("Query", query.Name))
 	} else if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "creating new Query")
 	}
 
+	id, _ := result.LastInsertId()
 	query.ID = uint(id) //nolint:gosec // dismiss G115
 	query.Packs = []fleet.Pack{}
 
@@ -522,7 +523,7 @@ func (ds *Datastore) DeleteQuery(ctx context.Context, teamID *uint, name string)
 	deleteStmt := "DELETE FROM queries WHERE id = ?"
 	result, err := ds.writer(ctx).ExecContext(ctx, deleteStmt, queryID)
 	if err != nil {
-		if ds.dialect.IsForeignKey(err) {
+		if isMySQLForeignKey(err) {
 			return ctxerr.Wrap(ctx, foreignKey("queries", name))
 		}
 		return ctxerr.Wrap(ctx, err, "delete queries")
@@ -597,11 +598,11 @@ func (ds *Datastore) deleteQueryStats(ctx context.Context, queryIDs []uint) {
 
 // Query returns a single Query identified by id, if such exists.
 func (ds *Datastore) Query(ctx context.Context, id uint) (*fleet.Query, error) {
-	return query(ctx, ds.reader(ctx), id, ds.dialect)
+	return query(ctx, ds.reader(ctx), id)
 }
 
-func query(ctx context.Context, db sqlx.QueryerContext, id uint, dialect DialectHelper) (*fleet.Query, error) {
-	sqlQuery := fmt.Sprintf(`
+func query(ctx context.Context, db sqlx.QueryerContext, id uint) (*fleet.Query, error) {
+	sqlQuery := `
 		SELECT
 			q.id,
 			q.team_id,
@@ -622,24 +623,18 @@ func query(ctx context.Context, db sqlx.QueryerContext, id uint, dialect Dialect
 			q.discard_data,
 			COALESCE(NULLIF(u.name, ''), u.email, '') AS author_name,
 			COALESCE(u.email, '') AS author_email,
-			%s as user_time_p50,
-			%s as user_time_p95,
-			%s as system_time_p50,
-			%s as system_time_p95,
-			%s as total_executions
+			JSON_EXTRACT(json_value, '$.user_time_p50') as user_time_p50,
+			JSON_EXTRACT(json_value, '$.user_time_p95') as user_time_p95,
+			JSON_EXTRACT(json_value, '$.system_time_p50') as system_time_p50,
+			JSON_EXTRACT(json_value, '$.system_time_p95') as system_time_p95,
+			JSON_EXTRACT(json_value, '$.total_executions') as total_executions
 		FROM queries q
 		LEFT JOIN users u
 			ON q.author_id = u.id
 		LEFT JOIN aggregated_stats ag
 			ON (ag.id = q.id AND ag.global_stats = ? AND ag.type = ?)
 		WHERE q.id = ?
-	`,
-		dialect.JSONExtract("json_value", "$.user_time_p50"),
-		dialect.JSONExtract("json_value", "$.user_time_p95"),
-		dialect.JSONExtract("json_value", "$.system_time_p50"),
-		dialect.JSONExtract("json_value", "$.system_time_p95"),
-		dialect.JSONExtract("json_value", "$.total_executions"),
-	)
+	`
 	query := &fleet.Query{}
 	if err := sqlx.GetContext(ctx, db, query, sqlQuery, false, fleet.AggregatedStatsTypeScheduledQuery, id); err != nil {
 		if err == sql.ErrNoRows {
@@ -663,7 +658,7 @@ func query(ctx context.Context, db sqlx.QueryerContext, id uint, dialect Dialect
 // determined by passed in fleet.ListOptions, count of total queries returned without limits, and
 // pagination metadata
 func (ds *Datastore) ListQueries(ctx context.Context, opt fleet.ListQueryOptions) (queries []*fleet.Query, total int, inherited int, metadata *fleet.PaginationMetadata, err error) {
-	getQueriesStmt := fmt.Sprintf(`
+	getQueriesStmt := `
 		SELECT
 			q.id,
 			q.team_id,
@@ -683,21 +678,15 @@ func (ds *Datastore) ListQueries(ctx context.Context, opt fleet.ListQueryOptions
 			q.updated_at,
 			COALESCE(u.name, '<deleted>') AS author_name,
 			COALESCE(u.email, '') AS author_email,
-			%s as user_time_p50,
-			%s as user_time_p95,
-			%s as system_time_p50,
-			%s as system_time_p95,
-			%s as total_executions
+			JSON_EXTRACT(json_value, '$.user_time_p50') as user_time_p50,
+			JSON_EXTRACT(json_value, '$.user_time_p95') as user_time_p95,
+			JSON_EXTRACT(json_value, '$.system_time_p50') as system_time_p50,
+			JSON_EXTRACT(json_value, '$.system_time_p95') as system_time_p95,
+			JSON_EXTRACT(json_value, '$.total_executions') as total_executions
 		FROM queries q
 		LEFT JOIN users u ON (q.author_id = u.id)
 		LEFT JOIN aggregated_stats ag ON (ag.id = q.id AND ag.global_stats = ? AND ag.type = ?)
-	`,
-		ds.dialect.JSONExtract("json_value", "$.user_time_p50"),
-		ds.dialect.JSONExtract("json_value", "$.user_time_p95"),
-		ds.dialect.JSONExtract("json_value", "$.system_time_p50"),
-		ds.dialect.JSONExtract("json_value", "$.system_time_p95"),
-		ds.dialect.JSONExtract("json_value", "$.total_executions"),
-	)
+	`
 
 	args := []interface{}{false, fleet.AggregatedStatsTypeScheduledQuery}
 	whereClauses := "WHERE saved = true"
@@ -1012,7 +1001,7 @@ func (ds *Datastore) UpdateLiveQueryStats(ctx context.Context, queryID uint, sta
 
 	// Bulk insert/update
 	const valueStr = "(?,?,?,?,?,?,?,?,?,?,?,?),"
-	stmt := ds.dialect.ReplaceInto() + " scheduled_query_stats (scheduled_query_id, host_id, query_type, executions, average_memory, system_time, user_time, wall_time, output_size, denylisted, schedule_interval, last_executed) VALUES " +
+	stmt := "REPLACE INTO scheduled_query_stats (scheduled_query_id, host_id, query_type, executions, average_memory, system_time, user_time, wall_time, output_size, denylisted, schedule_interval, last_executed) VALUES " +
 		strings.Repeat(valueStr, len(stats))
 	stmt = strings.TrimSuffix(stmt, ",")
 

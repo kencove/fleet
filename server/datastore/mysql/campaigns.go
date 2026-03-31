@@ -48,11 +48,12 @@ func (ds *Datastore) NewDistributedQueryCampaign(ctx context.Context, camp *flee
 		)
 		VALUES(?,?,?%s)
 	`, createdAtField, createdAtPlaceholder)
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), sqlStatement, args...)
+	result, err := ds.writer(ctx).ExecContext(ctx, sqlStatement, args...)
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "inserting distributed query campaign")
 	}
 
+	id, _ := result.LastInsertId()
 	camp.ID = uint(id) //nolint:gosec // dismiss G115
 	return camp, nil
 }
@@ -139,11 +140,12 @@ func (ds *Datastore) NewDistributedQueryCampaignTarget(ctx context.Context, targ
 		)
 		VALUES (?,?,?)
 	`
-	id, err := ds.insertAndGetID(ctx, ds.writer(ctx), sqlStatement, target.Type, target.DistributedQueryCampaignID, target.TargetID)
+	result, err := ds.writer(ctx).ExecContext(ctx, sqlStatement, target.Type, target.DistributedQueryCampaignID, target.TargetID)
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "insert distributed campaign target")
 	}
 
+	id, _ := result.LastInsertId()
 	target.ID = uint(id) //nolint:gosec // dismiss G115
 	return target, nil
 }

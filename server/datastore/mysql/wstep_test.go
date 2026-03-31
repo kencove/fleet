@@ -13,7 +13,7 @@ import (
 )
 
 func TestWSTEPStore(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	wantCert, err := cryptoutil.DecodePEMCertificate(testCert)
 	require.NoError(t, err)

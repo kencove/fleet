@@ -17,7 +17,7 @@ import (
 )
 
 func TestNanoMDMStorage(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 	cases := []struct {
 		name string
 		fn   func(t *testing.T, ds *Datastore)
@@ -266,10 +266,9 @@ func testEnqueueDeviceLockCommandRaceCondition(t *testing.T, ds *Datastore) {
 
 	// Create NanoMDMStorage
 	storage := &NanoMDMStorage{
-		db:      ds.writer(ctx),
-		logger:  slog.New(slog.DiscardHandler),
-		ds:      ds,
-		dialect: ds.dialect,
+		db:     ds.writer(ctx),
+		logger: slog.New(slog.DiscardHandler),
+		ds:     ds,
 	}
 
 	// Number of concurrent lock attempts

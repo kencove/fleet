@@ -15,7 +15,7 @@ import (
 var mockCreatedAt = time.Now().UTC().Truncate(time.Second)
 
 func TestCarves(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string

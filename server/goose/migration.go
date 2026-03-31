@@ -24,54 +24,14 @@ type Migration struct {
 	Next     int64               // next version, or -1 if none
 	Previous int64               // previous version, -1 if none
 	Source   string              // path to .sql script
-	UpFn     func(*sql.Tx) error // Up go migration function (dialect-agnostic fallback)
-	DownFn   func(*sql.Tx) error // Down go migration function (dialect-agnostic fallback)
-
-	// UpFnMySQL and DownFnMySQL are MySQL-specific migration functions.
-	// When set, they take precedence over UpFn/DownFn for MySQL databases.
-	UpFnMySQL   func(*sql.Tx) error
-	DownFnMySQL func(*sql.Tx) error
-
-	// UpFnPG and DownFnPG are PostgreSQL-specific migration functions.
-	// When set, they take precedence over UpFn/DownFn for PostgreSQL databases.
-	UpFnPG   func(*sql.Tx) error
-	DownFnPG func(*sql.Tx) error
+	UpFn     func(*sql.Tx) error // Up go migration function
+	DownFn   func(*sql.Tx) error // Down go migration function
 }
 
 const (
 	migrateUp   = true
 	migrateDown = !migrateUp
 )
-
-// selectFn returns the appropriate migration function for the given driver and direction.
-// It prefers dialect-specific functions (UpFnMySQL, UpFnPG) over the generic UpFn/DownFn.
-func (m *Migration) selectFn(driver string, direction bool) func(*sql.Tx) error {
-	if direction { // up
-		switch driver {
-		case "mysql":
-			if m.UpFnMySQL != nil {
-				return m.UpFnMySQL
-			}
-		case "postgres":
-			if m.UpFnPG != nil {
-				return m.UpFnPG
-			}
-		}
-		return m.UpFn
-	}
-	// down
-	switch driver {
-	case "mysql":
-		if m.DownFnMySQL != nil {
-			return m.DownFnMySQL
-		}
-	case "postgres":
-		if m.DownFnPG != nil {
-			return m.DownFnPG
-		}
-	}
-	return m.DownFn
-}
 
 func (m *Migration) String() string {
 	return fmt.Sprint(m.Source)
@@ -93,7 +53,10 @@ func (c *Client) runMigration(db *sql.DB, m *Migration, direction bool) error {
 			log.Fatal("db.Begin: ", err)
 		}
 
-		fn := m.selectFn(c.Dialect.DriverName(), direction)
+		fn := m.UpFn
+		if !direction {
+			fn = m.DownFn
+		}
 		if fn != nil {
 			if err := fn(tx); err != nil {
 				tx.Rollback() //nolint:errcheck

@@ -152,7 +152,10 @@ func (ds *Datastore) GetHostCertificateTemplateRecord(ctx context.Context, hostU
 			detail,
 			COALESCE(BIN_TO_UUID(uuid, true), '') AS uuid,
 			created_at,
-			updated_at
+			updated_at,
+			not_valid_before,
+			not_valid_after,
+			serial
 		FROM host_certificate_templates
 		WHERE host_uuid = ? AND certificate_template_id = ?
 	`
@@ -617,7 +620,7 @@ func (ds *Datastore) GetAndroidCertificateTemplatesForRenewal(
 				(DATEDIFF(not_valid_after, not_valid_before) > 30 AND not_valid_after < DATE_ADD(?, INTERVAL 30 DAY))
 				OR
 				(DATEDIFF(not_valid_after, not_valid_before) > 2 AND DATEDIFF(not_valid_after, not_valid_before) <= 30
-					AND not_valid_after < DATE_ADD(?, INTERVAL DATEDIFF(not_valid_after, not_valid_before)/2.0 DAY))
+					AND not_valid_after < DATE_ADD(?, INTERVAL DATEDIFF(not_valid_after, not_valid_before)/2 DAY))
 			)
 		ORDER BY not_valid_after ASC
 		LIMIT ?

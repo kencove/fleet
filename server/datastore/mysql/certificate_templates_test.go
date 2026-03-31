@@ -10,11 +10,12 @@ import (
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/test"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCertificates(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 
 	cases := []struct {
 		name string
@@ -188,13 +189,15 @@ func testGetCertificateTemplateByID(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateID = uint(lastID) //nolint:gosec
 			},
@@ -239,13 +242,15 @@ func testGetCertificateTemplateByID(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateID = uint(lastID) //nolint:gosec
 
@@ -314,13 +319,15 @@ func testGetCertificateTemplateByID(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateID = uint(lastID) //nolint:gosec
 
@@ -412,13 +419,15 @@ func testGetCertificateTemplatesByIdsAndTeam(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateID := uint(lastID) //nolint:gosec
 				IDs = append(IDs, certificateTemplateID)
@@ -430,13 +439,15 @@ func testGetCertificateTemplatesByIdsAndTeam(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 2",
 				}
-				lastID, err = ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err = ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err = res.LastInsertId()
 				require.NoError(t, err)
 				erroneousId = uint(lastID) //nolint:gosec
 				IDs = append(IDs, erroneousId)
@@ -684,13 +695,15 @@ func testDeleteCertificateTemplate(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				result, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificateTemplate.Name,
 					certificateTemplate.TeamID,
 					certificateTemplate.CertificateAuthorityID,
 					certificateTemplate.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID, err := result.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateID = uint(lastID) //nolint:gosec
 			},
@@ -911,13 +924,15 @@ func testBatchDeleteCertificateTemplates(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 1",
 				}
-				lastID1, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err := ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificate1.Name,
 					certificate1.TeamID,
 					certificate1.CertificateAuthorityID,
 					certificate1.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID1, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateIDs = append(certificateTemplateIDs, uint(lastID1)) //nolint:gosec
 
@@ -927,13 +942,15 @@ func testBatchDeleteCertificateTemplates(t *testing.T, ds *Datastore) {
 					CertificateAuthorityID: caID,
 					SubjectName:            "CN=Test Subject 2",
 				}
-				lastID2, err := ds.insertAndGetID(ctx, ds.writer(ctx),
+				res, err = ds.writer(ctx).ExecContext(ctx,
 					"INSERT INTO certificate_templates (name, team_id, certificate_authority_id, subject_name) VALUES (?, ?, ?, ?)",
 					certificate2.Name,
 					certificate2.TeamID,
 					certificate2.CertificateAuthorityID,
 					certificate2.SubjectName,
 				)
+				require.NoError(t, err)
+				lastID2, err := res.LastInsertId()
 				require.NoError(t, err)
 				certificateTemplateIDs = append(certificateTemplateIDs, uint(lastID2)) //nolint:gosec
 			},
@@ -1380,6 +1397,84 @@ func testResendHostCertificateTemplate(t *testing.T, ds *Datastore) {
 			require.NoError(t, err)
 		})
 	}
+
+	t.Run("clears validity fields and deletes challenge", func(t *testing.T) {
+		// Insert a delivered record
+		err = ds.BulkInsertHostCertificateTemplates(ctx, []fleet.HostCertificateTemplate{
+			{
+				HostUUID:              h1.UUID,
+				CertificateTemplateID: ct1.ID,
+				Status:                fleet.CertificateTemplateDelivered,
+				OperationType:         fleet.MDMOperationTypeInstall,
+				Name:                  "Template1",
+			},
+		})
+		require.NoError(t, err)
+
+		// Create a fleet challenge via the on-demand mechanism
+		challenge, err := ds.GetOrCreateFleetChallengeForCertificateTemplate(ctx, h1.UUID, ct1.ID)
+		require.NoError(t, err)
+		require.NotEmpty(t, challenge)
+
+		// Populate validity fields via UpsertCertificateStatus
+		certNotBefore := time.Now().UTC().Truncate(time.Second)
+		certNotAfter := certNotBefore.Add(365 * 24 * time.Hour)
+		certSerial := "AA:BB:CC:DD:EE"
+		certDetail := "enrollment succeeded"
+		err = ds.UpsertCertificateStatus(ctx, &fleet.CertificateStatusUpdate{
+			HostUUID:              h1.UUID,
+			CertificateTemplateID: ct1.ID,
+			Status:                fleet.MDMDeliveryVerified,
+			NotValidBefore:        &certNotBefore,
+			NotValidAfter:         &certNotAfter,
+			Serial:                &certSerial,
+			Detail:                &certDetail,
+			OperationType:         fleet.MDMOperationTypeInstall,
+		})
+		require.NoError(t, err)
+
+		// Verify fields are populated before resend
+		record, err := ds.GetHostCertificateTemplateRecord(ctx, h1.UUID, ct1.ID)
+		require.NoError(t, err)
+		require.NotNil(t, record.FleetChallenge)
+		require.NotNil(t, record.NotValidBefore)
+		require.NotNil(t, record.NotValidAfter)
+		require.NotNil(t, record.Serial)
+		require.NotNil(t, record.Detail)
+		originalUUID := record.UUID
+
+		// Verify challenge exists in challenges table
+		var challengeCount int
+		err = sqlx.GetContext(ctx, ds.reader(ctx), &challengeCount,
+			`SELECT COUNT(*) FROM challenges WHERE challenge = ?`, challenge)
+		require.NoError(t, err)
+		require.Equal(t, 1, challengeCount)
+
+		// Resend
+		err = ds.ResendHostCertificateTemplate(ctx, h1.ID, ct1.ID)
+		require.NoError(t, err)
+
+		// Verify all fields are cleared
+		updated, err := ds.GetHostCertificateTemplateRecord(ctx, h1.UUID, ct1.ID)
+		require.NoError(t, err)
+		require.Equal(t, fleet.CertificateTemplatePending, updated.Status)
+		require.NotEqual(t, originalUUID, updated.UUID, "UUID should change after resend")
+		require.Nil(t, updated.FleetChallenge, "fleet_challenge should be cleared")
+		require.Nil(t, updated.NotValidBefore, "not_valid_before should be cleared")
+		require.Nil(t, updated.NotValidAfter, "not_valid_after should be cleared")
+		require.Nil(t, updated.Serial, "serial should be cleared")
+		require.Nil(t, updated.Detail, "detail should be cleared")
+
+		// Verify the challenge row was deleted from the challenges table
+		err = sqlx.GetContext(ctx, ds.reader(ctx), &challengeCount,
+			`SELECT COUNT(*) FROM challenges WHERE challenge = ?`, challenge)
+		require.NoError(t, err)
+		require.Equal(t, 0, challengeCount, "challenge should be deleted from challenges table")
+
+		// Clean up
+		err = ds.DeleteHostCertificateTemplate(ctx, h1.UUID, ct1.ID)
+		require.NoError(t, err)
+	})
 
 	t.Run("returns error for non-existent host", func(t *testing.T) {
 		err := ds.ResendHostCertificateTemplate(ctx, 99999, ct1.ID)

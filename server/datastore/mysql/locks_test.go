@@ -14,7 +14,7 @@ import (
 )
 
 func TestLocks(t *testing.T) {
-	ds := CreateDS(t)
+	ds := CreateMySQLDS(t)
 	defer ds.Close()
 
 	cases := []struct {
